@@ -1,0 +1,7 @@
+CPPFLAGS = $(CPPFLAGS) -O2 -DPLATFORM_WIN32 -nologo -GS- -W4
+
+gfnsvsim.exe: gfnsvsim.obj
+	cl -nologo -Fm -Fe$@ $**
+
+gfnsvsim.obj: gfnsvCUDA+.cpp
+	$(CC) $(CPPFLAGS) -DDEVICE_SIMULATION -Fo$@ $**

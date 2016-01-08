@@ -10,7 +10,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#if defined(_MSC_VER) && _MSC_VER <= 1600  /* At least MSVC 2010 does not have nor this nor "inttypes.h" */
+#define PRIu64 "I64u"
+#else
 #include <inttypes.h>
+#endif
 #include <assert.h>
 #include <math.h>
 #include <time.h>
@@ -18,8 +22,44 @@
 #include <errno.h>
 #include <ctype.h>
 
+#if defined(DEVICE_CUDA) + defined(DEVICE_OPENCL) + defined(DEVICE_SIMULATION) != 1
+#error One DEVICE_xxx hardware platform must be defined
+#endif
+
+#ifdef DEVICE_CUDA
 #include <cuda.h>
 #include <cuda_runtime.h>
+#elif defined(DEVICE_SIMULATION)
+static void cudaFreeHost(void *p) { if (p) free(p); }
+#define cudaFree cudaFreeHost
+typedef enum
+{
+	cudaSuccess,
+	cudaErrorMissingConfiguration,
+	cudaErrorMemoryAllocation
+} cudaError_t;
+#define cudaGetErrorString(n) "Fake CUDA error"
+static cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int flags)
+{
+	(void) flags;
+	*pHost = malloc(size);
+	return *pHost ? cudaSuccess : cudaErrorMemoryAllocation;
+}
+#define cudaMalloc(pp, n) cudaHostAlloc(pp, n, 0)
+enum cudaMemcpyKind
+{
+	cudaMemcpyHostToHost,
+	cudaMemcpyHostToDevice,
+	cudaMemcpyDeviceToHost,
+	cudaMemcpyDeviceToDevice
+};
+static cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, enum cudaMemcpyKind kind)
+{
+	(void) kind;
+	memcpy(dst, src, count);
+	return cudaSuccess;
+}
+#endif
 
 #define PETA 1000000000000000
 
@@ -93,11 +133,14 @@ struct global_data {
 	char ckpt[80];
 	char fact[80];
 	int device_number;
+#ifdef DEVICE_CUDA
 	cudaDeviceProp device_info;
+#endif
 	U32 b_blocks_per_grid, blocks_per_grid;
 } gd;
 
 // Jacobi symbol
+static
 int jacobi(U32 m, U32 n)
 {
 	int c = 1;
@@ -129,6 +172,7 @@ struct sieve_prime_t {
 #define bit_test(arr, ndx) (arr[ndx >> 5] & (1 << (ndx & 0x1F)))
 #define bit_clear(arr, ndx) arr[ndx >> 5] &= ~(1 << (ndx & 0x1F))
 
+static
 U32 invN1(U32 p)
 {
 	U32 h = 1;
@@ -141,6 +185,7 @@ U32 invN1(U32 p)
 	return h;
 }
 
+static
 void init_sieve_primes(U64 startk)
 {
 	// calculate primes
@@ -192,6 +237,7 @@ void init_sieve_primes(U64 startk)
 
 U32 sieve[SIEVE_SIZE];
 
+static
 void sieve_iteration()
 {
 	memset(sieve, 0xFF, sizeof(sieve));
@@ -217,23 +263,20 @@ void sieve_iteration()
 
 #define MASK_24 0xffffff
 
-void modFULLslow(const FULL a, HALF b);
-void expmodHALF(U32 b, HALF ret);
-void expmodHALFcheck(const HALF init, HALF ret);
-void calc_inverse();
-void calc_ratio(const HALF num, const HALF den, HALF ratio);
-int Str2HALF(const char *s, HALF a, U32 * peta);
-U64 peta_to_k(U32 p_in_peta);
-void copyFULL(FULL dest, const FULL src);
-void shrFULL(FULL a, U32 b);
+static void modFULLslow(const FULL a, HALF b);
+static void expmodHALF(U32 b, HALF ret);
+static void expmodHALFcheck(const HALF init, HALF ret);
+static void calc_inverse(void);
+static void calc_ratio(const HALF num, const HALF den, HALF ratio);
 
 #ifdef PLATFORM_WIN32
 #include <Windows.h>
 
 volatile int term_requested = 0;
 
-BOOL CtrlHandler( DWORD fdwCtrlType )
+static BOOL WINAPI CtrlHandler( DWORD fdwCtrlType )
 {
+	(void) fdwCtrlType;
 	term_requested = 1;
 	printf("\nTermination requested\n");
 	return TRUE;
@@ -262,21 +305,25 @@ void my_sig_handler(int sig)
 }
 #endif // PLATFORM_LINUX
 
+static
 U64 cvt_q(const HALF h)
 {
 	return ((U64) h[1] << 32) + h[0];
 }
 
+static
 U64 cvt_q_hi(const HALF h)
 {
 	return ((U64) h[2] << 32) + h[1];
 }
 
+static
 double cvt_dbl(const HALF h)
 {
 	return ((double) h[2] * M_2_POW_32 + (double) h[1]) * M_2_POW_32 + (double) h[0];
 }
 
+static
 void initHALF2(HALF a, U64 q, U32 d)
 {
 	a[0] = (U32) q;
@@ -284,16 +331,19 @@ void initHALF2(HALF a, U64 q, U32 d)
 	a[2] = d;
 }
 
+static
 void initHALF(HALF a, U64 q)
 {
 	initHALF2(a, q, 0);
 }
 
+static
 void copyHALF(HALF dest, const HALF src)
 {
 	dest[0] = src[0], dest[1] = src[1], dest[2] = src[2];
 }
 
+static
 void divmodHALFsingle(HALF a, U32 b, U32 &m) // a /= b
 {
 	U64 q;
@@ -308,13 +358,17 @@ void divmodHALFsingle(HALF a, U32 b, U32 &m) // a /= b
 	m = (U32) r;
 }
 
+#if 0 // Not used
+static
 void divHALFsingle(HALF a, U32 b) // a /= b
 {
 	U32 dummy;
 
 	divmodHALFsingle(a,b,dummy);
 }
+#endif
 
+static
 void shrHALF(HALF a, U32 b) // a >>= b
 {
 	while(b >= 32)
@@ -330,6 +384,7 @@ void shrHALF(HALF a, U32 b) // a >>= b
 	}
 }
 
+static
 void shlHALF(HALF a, U32 b) // a <<= b
 {
 	while(b >= 32)
@@ -345,13 +400,17 @@ void shlHALF(HALF a, U32 b) // a <<= b
 	}
 }
 
+#if 0 // Not used
+static
 void hiHALF(const FULL f, HALF h)
 {
 	h[0] = f[3];
 	h[1] = f[4];
 	h[2] = f[5];
 }
+#endif
 
+static
 void loHALF(const FULL f, HALF h)
 {
 	h[0] = f[0];
@@ -359,6 +418,7 @@ void loHALF(const FULL f, HALF h)
 	h[2] = f[2];
 }
 
+static
 void mulHALF(const HALF a, const HALF b, FULL c)
 {
 	U64 t;
@@ -384,6 +444,7 @@ void mulHALF(const HALF a, const HALF b, FULL c)
 	t += __emulu(m, a[2]) + w[2]; c[4] = (U32) t; c[5] = (U32) (t >> 32);
 }
 
+static
 void mulHALFpartial(const HALF a, const HALF b, HALF c)
 {
 	U64 t;
@@ -406,6 +467,7 @@ void mulHALFpartial(const HALF a, const HALF b, HALF c)
 	t  += __emulu(m, a[0]); c[2] = (U32) t;
 }
 
+static
 void mulHALFpartialhi(const HALF a, const HALF b, HALF c)
 {
 	U64 t;
@@ -440,6 +502,7 @@ void mulHALFpartialhi(const HALF a, const HALF b, HALF c)
 	}
 }
 
+static
 void squareHALF(const HALF a, FULL b)
 {
 	U64 t;
@@ -466,6 +529,7 @@ void squareHALF(const HALF a, FULL b)
 	t += b[5]; b[5] = (U32) t;
 }
 
+static
 int cmpHALF(const HALF a, const HALF b)
 {
 	if(a[2] > b[2]) return 1;
@@ -478,6 +542,7 @@ int cmpHALF(const HALF a, const HALF b)
 	return 0;
 }
 
+static
 void addHALF(HALF a, const HALF b) // a += b
 {
 	U64 t;
@@ -487,6 +552,7 @@ void addHALF(HALF a, const HALF b) // a += b
 	t += (U64) a[2] + b[2]; a[2] = (U32) t;
 }
 
+static
 void incHALF(HALF a) // a++
 {
 	if( ++a[0] == 0)
@@ -498,6 +564,7 @@ void incHALF(HALF a) // a++
 	}
 }
 
+static
 int subHALF(HALF a, const HALF b)
 {
 	U64 t;
@@ -508,6 +575,7 @@ int subHALF(HALF a, const HALF b)
 	return (U32) t;
 }
 
+static
 void mul_64_32(HALF a, U64 q, U32 b)
 {
 	U32 q0 = (U32) q, q1 = (U32) (q >> 32);
@@ -519,6 +587,7 @@ void mul_64_32(HALF a, U64 q, U32 b)
 	t += __emulu(b, q1); a[1] = (U32) t; a[2] = (U32) (t >> 32);
 }
 
+static
 char *HALF2Str(const HALF a)
 {
 	U64 q;
@@ -539,6 +608,7 @@ char *HALF2Str(const HALF a)
 }
 
 // result must fit within a FULL. no check performed.
+static
 void mulFULLsingle(const FULL a, const U32 b, FULL c) // c = a * b;
 {
 	U64 t;
@@ -551,6 +621,7 @@ void mulFULLsingle(const FULL a, const U32 b, FULL c) // c = a * b;
 	t += __emulu(b, a[5]); c[5] = (U32) t;
 }
 
+static
 int subFULL(const FULL a, const FULL b, FULL c) // c= a-b. borrow out is returned
 {
 	U64 t;
@@ -565,6 +636,7 @@ int subFULL(const FULL a, const FULL b, FULL c) // c= a-b. borrow out is returne
 	return (int) (U32) t;
 }
 
+static
 U32 msb(U32 x)
 {
 	U32 b = 0;
@@ -577,12 +649,14 @@ U32 msb(U32 x)
 	return b;
 }
 
+static
 U32 bitsHALF(const HALF a)
 {
 	return 1 + (a[2] ? (msb(a[2])+64) : (msb(a[1])+32));
 }
 
 // process a single k. k is available in gd.k
+static
 void processk(U32 cand_per_fac)
 {
 	initHALF(gd.the_f, gd.k); shlHALF(gd.the_f, gd.n+1); gd.the_f[0]++;
@@ -659,6 +733,7 @@ void processk(U32 cand_per_fac)
 	gd.factorsInBuffer++;
 }
 
+static
 int Str2HALF(const char *s, HALF a, U32 * peta)
 {
 	int len = strlen(s);
@@ -691,6 +766,7 @@ int Str2HALF(const char *s, HALF a, U32 * peta)
 	return 0;
 }
 
+static
 U64 peta_to_k(U32 p_in_peta)
 {
 	HALF tmp;
@@ -699,12 +775,14 @@ U64 peta_to_k(U32 p_in_peta)
 	return cvt_q(tmp);
 }
 
+static
 void copyFULL(FULL dest, const FULL src)
 {
 	for(int i=0; i < 6; i++)
 		dest[i] = src[i];
 }
 
+static
 void shrFULL(FULL a, U32 b) // a >>= b
 {
 	while(b >= 32)
@@ -722,6 +800,7 @@ void shrFULL(FULL a, U32 b) // a >>= b
 	}
 }
 
+static
 void modFULLslow(const FULL a, HALF b) // b = a mod k.N1+1
 {
 	HALF a_hi, quot;
@@ -743,6 +822,7 @@ void modFULLslow(const FULL a, HALF b) // b = a mod k.N1+1
 		subHALF(b, gd.the_f);
 }
 
+static
 void expmodHALF(U32 b, HALF ret) // compute b^k mod (k*N1+1)
 {
 	U64 q = 0x8000000000000000;
@@ -769,6 +849,7 @@ void expmodHALF(U32 b, HALF ret) // compute b^k mod (k*N1+1)
 	copyHALF( ret, e );
 }
 
+static
 void expmodHALFcheck(const HALF init, HALF ret) // compute init^N mod (k*N1+1)
 {
 	HALF e;
@@ -786,6 +867,7 @@ void expmodHALFcheck(const HALF init, HALF ret) // compute init^N mod (k*N1+1)
 }
 
 
+static
 void calc_inverse()
 {
 	gd.the_f_bits = bitsHALF(gd.the_f);
@@ -809,6 +891,7 @@ void calc_inverse()
 	}
 }
 
+static
 void calc_ratio(const HALF num, const HALF den, HALF ratio)
 {
 	HALF num1; copyHALF(num1, num);
@@ -831,6 +914,7 @@ void calc_ratio(const HALF num, const HALF den, HALF ratio)
 }
 
 
+static
 U64 read_last_factor()
 {
 	char buf[80] = "";
@@ -865,6 +949,7 @@ U64 read_last_factor()
 	return k;
 }
 
+static
 U64 read_checkpoint(U64 startk, U64 endk)
 {
 	FILE *fp = fopen(gd.ckpt, "r");
@@ -905,6 +990,7 @@ U64 read_checkpoint(U64 startk, U64 endk)
 	return k;
 }
 
+static
 void write_checkpoint(U64 k, bool force = false)
 {
 	static clock_t next_write_time = 0;
@@ -925,6 +1011,7 @@ void write_checkpoint(U64 k, bool force = false)
 	}
 }
 
+static
 void write_factor(FILE *fp, const HALF factor, U32 base, bool screen_out)
 {
 	char buf[80];
@@ -941,6 +1028,7 @@ void write_factor(FILE *fp, const HALF factor, U32 base, bool screen_out)
 	}
 }
 
+static
 void write_factor_batch(U32 factor_count)
 {
 	FILE *fp = fopen(gd.fact, "a");
@@ -961,6 +1049,7 @@ void write_factor_batch(U32 factor_count)
 	fclose(fp);
 }
 
+static
 void write_factor_header()
 {
 	FILE *fp = fopen(gd.fact, "a");
@@ -974,6 +1063,7 @@ void write_factor_header()
 	fclose(fp);
 }
 
+static
 void print_status(HALF lastf)
 {
 	static clock_t next_status_time = 0;
@@ -1025,6 +1115,7 @@ void print_status(HALF lastf)
 
 }
 
+#ifdef DEVICE_CUDA
 // x86 style intrinsics for multi-precision arithmetic
 
 __device__ static unsigned int __add(unsigned int a, unsigned int b)
@@ -1772,8 +1863,10 @@ __global__ void gfn_kernel79(u64 *fac_mult_ratio, u64 *init, u32 bmax, u32 count
 		fac_mult_ratio1[shift_index*3+2]
 	);
 }
+#endif // DEVICE_CUDA
 
 
+static
 void CUDA_error_exit(cudaError_t cudaError, int line)
 {
 	if(cudaError != cudaSuccess)
@@ -1796,6 +1889,7 @@ void CUDA_error_exit(cudaError_t cudaError, int line)
 	}
 }
 
+static
 void usage_exit()
 {
 //	printf("GFN_Sieve <n> <bmax> <startp> <endp> [device number]\n");
@@ -1817,6 +1911,7 @@ void usage_exit()
 	exit(1);
 }
 
+static
 int isnumeric(char *arg)
 {
 	int c=0;
@@ -1834,6 +1929,7 @@ int isnumeric(char *arg)
 }
 
 
+static
 void parse_params(int argc, char * argv[])
 {
 	if(argc < 4)
@@ -1984,7 +2080,7 @@ int main(int argc, char *argv[])
 	term_requested = 0;
 
 #ifdef PLATFORM_WIN32
-	SetConsoleCtrlHandler( (PHANDLER_ROUTINE) CtrlHandler, TRUE );
+	SetConsoleCtrlHandler( CtrlHandler, TRUE );
 #endif
 #ifdef PLATFORM_LINUX
 	signal( SIGINT, my_sig_handler );
@@ -2021,6 +2117,7 @@ int main(int argc, char *argv[])
 	u32 cand_per_fac = 1 << b_cand_per_fac;
 	u32 fac_per_grid = cand_per_grid / cand_per_fac;
 
+#ifdef DEVICE_CUDA
 	// Hoping to avoid CPU busy-wait behavior. Might also improve screen responsiveness
 	// Remember: SetDeviceFlags should be done before SetDevice!!
 	CUDA_error_exit( cudaSetDeviceFlags( BLOCKING_SYNC ), __LINE__ );
@@ -2037,6 +2134,7 @@ int main(int argc, char *argv[])
 		printf("\n\nWARNING! Compute 1.x card detected.\n"
 			"For optimal performance, Compute 2.x or better is recommended\n\n");
 	}
+#endif
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.b_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3, 0), __LINE__ );
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.h_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3, 0), __LINE__ );
@@ -2083,12 +2181,14 @@ int main(int argc, char *argv[])
 					// We're trying to do candiate preparation (CPU) and factor finding (GPU) in a
 					// piplelined fashion, to maximize thruput.
 					if( kernel_in_progress ) {
+#ifdef DEVICE_CUDA
 						// Sync for the previous kernel. Not really needed, as the following Memcpy will do it anyways.
 						CUDA_error_exit( SYNC_CALL(), __LINE__ );
 
 						CUDA_error_exit( cudaMemcpy(gd.h_Result, gd.d_Result, RESULT_BUFFER_SIZE * sizeof(u32), cudaMemcpyDeviceToHost), __LINE__ );
 
 						CUDA_error_exit( SYNC_CALL(), __LINE__ );
+#endif // DEVICE_CUDA
 
 						U32 factor_count = gd.h_Result[0];
 						if(factor_count > 0) {
@@ -2127,6 +2227,7 @@ int main(int argc, char *argv[])
 					CUDA_error_exit( cudaMemcpy(gd.b_Factor_Mult_Ratio, gd.h_Factor_Mult_Ratio,  fac_per_grid * sizeof(u64) * 3, cudaMemcpyHostToHost  ), __LINE__ );
 					CUDA_error_exit( cudaMemcpy(gd.b_Factor_Mult_Ratio1, gd.h_Factor_Mult_Ratio1,  fac_per_grid * sizeof(u32) * 3, cudaMemcpyHostToHost  ), __LINE__ );
 
+#ifdef DEVICE_CUDA
 					if(gd.device_info.major == 1) {
 						if (gd.k < crossover63) {
 							core = 63;
@@ -2215,6 +2316,7 @@ int main(int argc, char *argv[])
 							, gd.d_Init1);
 						}
 					}
+#endif // DEVICE_CUDA
 					kernel_in_progress = true;
 					last_processed_k = gd.k; // this is the last k in the currently executing batch
 					gd.candsInBuffer = 0;
