@@ -675,7 +675,7 @@ void processk(U32 cand_per_fac)
 	}
 
 	if(qnr != -1) {
-		printf("Unable to find qnr for %s\n", HALF2Str(gd.the_f));
+		printf("\nUnable to find qnr for %s\n", HALF2Str(gd.the_f));
 		return;
 	}
 
@@ -1872,8 +1872,8 @@ void CUDA_error_exit(cudaError_t cudaError, int line)
 	if(cudaError != cudaSuccess)
 	{
 		printf("CUDA Error %d @ %d: %s \n", cudaError, line, cudaGetErrorString(cudaError));
-		if(gd.d_Result != NULL) cudaFree(gd.d_Init);
-		if(gd.h_Result != NULL) cudaFreeHost(gd.h_Init);
+		if(gd.d_Result != NULL) cudaFree(gd.d_Result);
+		if(gd.h_Result != NULL) cudaFreeHost(gd.h_Result);
 		if(gd.d_Init != NULL) cudaFree(gd.d_Init);
 		if(gd.h_Init != NULL) cudaFreeHost(gd.h_Init);
 		if(gd.d_Factor_Mult_Ratio!= NULL) cudaFree(gd.d_Factor_Mult_Ratio);
