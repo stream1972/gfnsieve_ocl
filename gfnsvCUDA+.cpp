@@ -29,9 +29,9 @@
 #ifdef DEVICE_CUDA
 #include <cuda.h>
 #include <cuda_runtime.h>
-#elif defined(DEVICE_SIMULATION)
-static void cudaFreeHost(void *p) { if (p) free(p); }
-#define cudaFree cudaFreeHost
+#endif
+
+#ifdef DEVICE_SIMULATION
 typedef enum
 {
 	cudaSuccess,
@@ -39,27 +39,27 @@ typedef enum
 	cudaErrorMemoryAllocation
 } cudaError_t;
 #define cudaGetErrorString(n) "Fake CUDA error"
-static cudaError_t cudaHostAlloc(void **pHost, size_t size, unsigned int flags)
+
+/* For simulation, all memory is allocated on PC using plain malloc/free */
+static void cudaFreeHost(void *p) { if (p) free(p); }
+#define cudaFree cudaFreeHost
+static cudaError_t cudaMalloc(void **pHost, size_t size)
 {
-	(void) flags;
 	*pHost = malloc(size);
 	return *pHost ? cudaSuccess : cudaErrorMemoryAllocation;
 }
-#define cudaMalloc(pp, n) cudaHostAlloc(pp, n, 0)
-enum cudaMemcpyKind
+#define cudaMalloc_ro cudaMalloc
+#define cudaMalloc_rw cudaMalloc
+#define cudaHostAlloc(p, n, f) cudaMalloc(p, n)
+
+static cudaError_t cudaMemcpyWrapper(void *dst, const void *src, size_t count)
 {
-	cudaMemcpyHostToHost,
-	cudaMemcpyHostToDevice,
-	cudaMemcpyDeviceToHost,
-	cudaMemcpyDeviceToDevice
-};
-static cudaError_t cudaMemcpy(void *dst, const void *src, size_t count, enum cudaMemcpyKind kind)
-{
-	(void) kind;
 	memcpy(dst, src, count);
 	return cudaSuccess;
 }
-#endif
+#define cudaMemcpy_htd(dst, src, count, kind) cudaMemcpyWrapper(dst, src, count)
+#define cudaMemcpy_hth(dst, src, count, kind) cudaMemcpyWrapper(dst, src, count)
+#endif // DEVICE_SIMULATION
 
 #define PETA 1000000000000000
 
@@ -105,6 +105,47 @@ U64 __emulu(U64 a, U64 b)
 
 #endif
 
+#ifdef DEVICE_OPENCL
+#include "gsv_ocl.h"
+#define cudaError_t        cl_int
+#define cudaSuccess        CL_SUCCESS
+#define cudaGetErrorString ocl_strerror
+
+static cl_int cudaHostAlloc(void **pHost, size_t size, unsigned int flags)
+{
+	(void) flags;
+	*pHost = malloc(size);
+	return *pHost ? CL_SUCCESS : CL_OUT_OF_HOST_MEMORY;
+}
+static void cudaFreeHost(void *p) { if (p) free(p); }
+static cl_int oclCreateBufferGeneric(cl_mem *pmem, size_t size, unsigned flags, ocl_context_t *cont)
+{
+	cl_int status;
+
+	*pmem = clCreateBuffer(cont->clcontext, flags, size, NULL, &status);
+	ocl_diagnose(status, "clCreateBuffer", cont);
+	return status;
+}
+#define cudaMalloc_ro(pp, size) oclCreateBufferGeneric((cl_mem *)(pp), size, CL_MEM_READ_ONLY,  gd.device_ctx)
+#define cudaMalloc_rw(pp, size) oclCreateBufferGeneric((cl_mem *)(pp), size, CL_MEM_READ_WRITE, gd.device_ctx)
+#define cudaFree(p)             ocl_diagnose( clReleaseMemObject(p), "clReleaseMemObject", gd.device_ctx )
+
+static cl_int hostMemcpyWrapper(void *dest, const void *src, size_t size)
+{
+	memcpy(dest, src, size);
+	return CL_SUCCESS;
+}
+static cl_int copyToDeviceWrapper(cl_mem dest, void *src, size_t size, ocl_context_t *cont)
+{
+	cl_int status;
+
+	status = clEnqueueWriteBuffer(cont->cmdQueue, dest, CL_TRUE, 0, size, src, NULL, NULL, NULL);
+	return ocl_diagnose(status, "clEnqueueWriteBuffer", cont);
+}
+#define cudaMemcpy_hth(dest, src, size, flags) hostMemcpyWrapper(dest, src, size)
+#define cudaMemcpy_htd(dest, src, size, flags) copyToDeviceWrapper(dest, src, size, gd.device_ctx)
+#endif // DEVICE_OPENCL
+
 // Global data structure. Avoid namespace conflict with local variables.
 struct global_data {
 	U32 n;	// 18..24. might change later after safety analysis
@@ -119,11 +160,21 @@ struct global_data {
 	U64 factorcount;
 	HALF the_f, the_f_inverse;
 	U32 the_f_bits;
+#if defined(DEVICE_CUDA) || defined(DEVICE_SIMULATION)
 	u64 *h_Factor_Mult_Ratio, *d_Factor_Mult_Ratio, *b_Factor_Mult_Ratio;
 	u32 *h_Factor_Mult_Ratio1, *d_Factor_Mult_Ratio1, *b_Factor_Mult_Ratio1;
 	u64 *h_Init  , *d_Init;
 	u32 *h_Init1 , *d_Init1;
 	u32 *h_Result, *d_Result;
+#endif
+#ifdef DEVICE_OPENCL
+	/* Same as CUDA but device memory must have cl_mem type */
+	u64 *h_Factor_Mult_Ratio,  *b_Factor_Mult_Ratio;  cl_mem d_Factor_Mult_Ratio;
+	u32 *h_Factor_Mult_Ratio1, *b_Factor_Mult_Ratio1; cl_mem d_Factor_Mult_Ratio1;
+	u64 *h_Init;   cl_mem d_Init;
+	u32 *h_Init1;  cl_mem d_Init1;
+	u32 *h_Result; cl_mem d_Result;
+#endif
 	clock_t starttime;
 	U32 startp_in_peta;
 	U32 endp_in_peta;
@@ -135,6 +186,9 @@ struct global_data {
 	int device_number;
 #ifdef DEVICE_CUDA
 	cudaDeviceProp device_info;
+#endif
+#ifdef DEVICE_OPENCL
+	ocl_context_t *device_ctx;
 #endif
 	U32 b_blocks_per_grid, blocks_per_grid;
 } gd;
@@ -1884,6 +1938,9 @@ void CUDA_error_exit(cudaError_t cudaError, int line)
 		if(gd.d_Factor_Mult_Ratio1!= NULL) cudaFree(gd.d_Factor_Mult_Ratio1);
 		if(gd.h_Factor_Mult_Ratio1!= NULL) cudaFreeHost(gd.h_Factor_Mult_Ratio1);
 		if(gd.b_Factor_Mult_Ratio1!= NULL) cudaFreeHost(gd.b_Factor_Mult_Ratio1);
+#ifdef DEVICE_OPENCL
+		if (gd.device_ctx) ocl_cleanup_device(gd.device_ctx, true);
+#endif
 
 		exit(1);
 	}
@@ -2135,23 +2192,44 @@ int main(int argc, char *argv[])
 			"For optimal performance, Compute 2.x or better is recommended\n\n");
 	}
 #endif
+#ifdef DEVICE_OPENCL
+	int nDev = ocl_initialize_devices();
+	if (nDev <= 0)
+	{
+		printf("No compatible OpenCL devices found\n");
+		return 1;
+	}
+	if (gd.device_number >= nDev)
+	{
+		printf("Cannot use device index %d, only %d devices detected\n", gd.device_number, nDev);
+		return 1;
+	}
+	gd.device_ctx = ocl_get_context(gd.device_number);
+	if (gd.device_ctx == NULL || !gd.device_ctx->active)
+	{
+		printf("Failed to activate device %d!\n", gd.device_number);
+		return 1;
+	}
+	CUDA_error_exit( ocl_preconfigure(gd.device_ctx), __LINE__ );
+	cl_event event_in_progress = NULL;
+#endif
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.b_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3, 0), __LINE__ );
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.h_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3, 0), __LINE__ );
-	CUDA_error_exit( cudaMalloc((void**)&gd.d_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3), __LINE__ );
+	CUDA_error_exit( cudaMalloc_ro((void**)&gd.d_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3), __LINE__ );
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.h_Init, cand_per_grid * sizeof(u64), 0), __LINE__ );
-	CUDA_error_exit( cudaMalloc((void**)&gd.d_Init, cand_per_grid * sizeof(u64)), __LINE__ );
+	CUDA_error_exit( cudaMalloc_ro((void**)&gd.d_Init, cand_per_grid * sizeof(u64)), __LINE__ );
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.h_Result, RESULT_BUFFER_SIZE * sizeof(u32), 0), __LINE__ );
-	CUDA_error_exit( cudaMalloc((void**)&gd.d_Result, RESULT_BUFFER_SIZE * sizeof(u32)), __LINE__ );
+	CUDA_error_exit( cudaMalloc_rw((void**)&gd.d_Result, RESULT_BUFFER_SIZE * sizeof(u32)), __LINE__ );
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.b_Factor_Mult_Ratio1, fac_per_grid * sizeof(u32) * 3, 0), __LINE__ );
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.h_Factor_Mult_Ratio1, fac_per_grid * sizeof(u32) * 3, 0), __LINE__ );
-	CUDA_error_exit( cudaMalloc((void**)&gd.d_Factor_Mult_Ratio1, fac_per_grid * sizeof(u32) * 3), __LINE__ );
+	CUDA_error_exit( cudaMalloc_ro((void**)&gd.d_Factor_Mult_Ratio1, fac_per_grid * sizeof(u32) * 3), __LINE__ );
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.h_Init1, cand_per_grid * sizeof(u32), 0), __LINE__ );
-	CUDA_error_exit( cudaMalloc((void**)&gd.d_Init1, cand_per_grid * sizeof(u32)), __LINE__ );
+	CUDA_error_exit( cudaMalloc_ro((void**)&gd.d_Init1, cand_per_grid * sizeof(u32)), __LINE__ );
 
 	gd.starttime = MY_TIME();
 	gd.factorsInBuffer = 0;
@@ -2189,9 +2267,27 @@ int main(int argc, char *argv[])
 
 						CUDA_error_exit( SYNC_CALL(), __LINE__ );
 #endif // DEVICE_CUDA
-
+#ifdef DEVICE_OPENCL
+						/* clEnqueueReadBuffer will automatically wait for completion of kernel since we've used an event */
+						CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 1, &event_in_progress, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+						CUDA_error_exit( ocl_diagnose( clReleaseEvent(event_in_progress), "clReleaseEvent", gd.device_ctx ), __LINE__ );
+						event_in_progress = NULL;
+#endif
 						U32 factor_count = gd.h_Result[0];
 						if(factor_count > 0) {
+#ifdef DEVICE_OPENCL
+							/* OpenCL does not have buffer size check in atomic_inc.
+							   Check it here and hope that we dind't crashed whole PC.
+							*/
+							if (factor_count > RESULT_BUFFER_COUNT)
+							{
+								printf( "\nFATAL ERROR: result buffer overflow.\n\n"
+									"If error is repeatable at same 'p', try to decrease 'B' parameter\n"
+									"and contact author. Otherwise, it may be GPU overclock/overheat problem.\n"
+									);
+								CUDA_error_exit(-9999, __LINE__);
+							}
+#endif
 							// printf("\nBatch count: %u\n", factor_count);
 							write_factor_batch( factor_count );
 						}
@@ -2221,11 +2317,11 @@ int main(int argc, char *argv[])
 
 					// Execute a new batch
 					// The memcpy's are synchronous. The kernel is asynchronous.
-					CUDA_error_exit( cudaMemcpy(gd.d_Result, gd.h_Result, 1 * sizeof(u32), cudaMemcpyHostToDevice), __LINE__ );
-					CUDA_error_exit( cudaMemcpy(gd.d_Init  , gd.h_Init  , cand_per_grid * sizeof(u64), cudaMemcpyHostToDevice), __LINE__ );
-					CUDA_error_exit( cudaMemcpy(gd.d_Factor_Mult_Ratio, gd.h_Factor_Mult_Ratio,  fac_per_grid * sizeof(u64) * 3, cudaMemcpyHostToDevice), __LINE__ );
-					CUDA_error_exit( cudaMemcpy(gd.b_Factor_Mult_Ratio, gd.h_Factor_Mult_Ratio,  fac_per_grid * sizeof(u64) * 3, cudaMemcpyHostToHost  ), __LINE__ );
-					CUDA_error_exit( cudaMemcpy(gd.b_Factor_Mult_Ratio1, gd.h_Factor_Mult_Ratio1,  fac_per_grid * sizeof(u32) * 3, cudaMemcpyHostToHost  ), __LINE__ );
+					CUDA_error_exit( cudaMemcpy_htd(gd.d_Result, gd.h_Result, 1 * sizeof(u32), cudaMemcpyHostToDevice), __LINE__ );
+					CUDA_error_exit( cudaMemcpy_htd(gd.d_Init  , gd.h_Init  , cand_per_grid * sizeof(u64), cudaMemcpyHostToDevice), __LINE__ );
+					CUDA_error_exit( cudaMemcpy_htd(gd.d_Factor_Mult_Ratio, gd.h_Factor_Mult_Ratio,  fac_per_grid * sizeof(u64) * 3, cudaMemcpyHostToDevice), __LINE__ );
+					CUDA_error_exit( cudaMemcpy_hth(gd.b_Factor_Mult_Ratio, gd.h_Factor_Mult_Ratio,  fac_per_grid * sizeof(u64) * 3, cudaMemcpyHostToHost  ), __LINE__ );
+					CUDA_error_exit( cudaMemcpy_hth(gd.b_Factor_Mult_Ratio1, gd.h_Factor_Mult_Ratio1,  fac_per_grid * sizeof(u32) * 3, cudaMemcpyHostToHost  ), __LINE__ );
 
 #ifdef DEVICE_CUDA
 					if(gd.device_info.major == 1) {
@@ -2317,6 +2413,62 @@ int main(int argc, char *argv[])
 						}
 					}
 #endif // DEVICE_CUDA
+#ifdef DEVICE_OPENCL
+					if (gd.k < crossover63)
+					{
+						core = 63;
+						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress
+							, gd.blocks_per_grid * THREADS_PER_BLOCK
+							, gd.d_Factor_Mult_Ratio
+							, gd.d_Init
+							, gd.bmax+1
+							, iter_per_cand
+							, gd.d_Result
+							, b_cand_per_fac
+							, NULL
+							, NULL
+							), __LINE__
+						);
+					}
+					else if (gd.k < crossover64)
+					{
+						if(core == 63)
+							printf("Switching to 64 bit core...                                                   \n\n");
+						core = 64;
+						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress
+							, gd.blocks_per_grid * THREADS_PER_BLOCK
+							, gd.d_Factor_Mult_Ratio
+							, gd.d_Init
+							, gd.bmax+1
+							, iter_per_cand
+							, gd.d_Result
+							, b_cand_per_fac
+							, NULL
+							, NULL
+							), __LINE__
+						);
+					}
+					else
+					{
+						if(core == 64)
+							printf("Switching to 79 bit core...                                                   \n\n");
+						core = 79;
+						CUDA_error_exit( cudaMemcpy_htd(gd.d_Init1  , gd.h_Init1  , cand_per_grid * sizeof(u32), cudaMemcpyHostToDevice), __LINE__ );
+						CUDA_error_exit( cudaMemcpy_htd(gd.d_Factor_Mult_Ratio1, gd.h_Factor_Mult_Ratio1,  fac_per_grid * sizeof(u32) * 3, cudaMemcpyHostToDevice), __LINE__ );
+						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress
+							, gd.blocks_per_grid * THREADS_PER_BLOCK
+							, gd.d_Factor_Mult_Ratio
+							, gd.d_Init
+							, gd.bmax+1
+							, iter_per_cand
+							, gd.d_Result
+							, b_cand_per_fac
+							, gd.d_Factor_Mult_Ratio1
+							, gd.d_Init1
+							), __LINE__
+						);
+					}
+#endif // DEVICE_OPENCL
 					kernel_in_progress = true;
 					last_processed_k = gd.k; // this is the last k in the currently executing batch
 					gd.candsInBuffer = 0;
@@ -2344,6 +2496,9 @@ freeresources:
 	cudaFree(gd.d_Factor_Mult_Ratio);
 	cudaFreeHost(gd.h_Factor_Mult_Ratio);
 	cudaFreeHost(gd.b_Factor_Mult_Ratio);
+#ifdef DEVICE_OPENCL
+	ocl_cleanup_device(gd.device_ctx, true);
+#endif
 
 	return 0;
 }

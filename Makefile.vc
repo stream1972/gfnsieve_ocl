@@ -1,7 +1,41 @@
-CPPFLAGS = $(CPPFLAGS) -O2 -DPLATFORM_WIN32 -nologo -GS- -W4
+# Path to OpenCL toolkit (if compiler cannot be seen with default settings)
+OPENCLDIR = C:\Program Files (x86)\AMD APP
+
+CPPFLAGS = $(CPPFLAGS) -nologo -c -O2 -DPLATFORM_WIN32 -GS- -W4 -I"$(OPENCLDIR)\include"
+CPPFLAGS = $(CPPFLAGS) -D_CRT_SECURE_NO_WARNINGS
+LINKCMD = cl -nologo -Fm -Fe$@ $**
+LINKCMD = $(LINKCMD) /link /DYNAMICBASE:NO
+
+!ifdef WIN64
+
+gfnsvsim64.exe: gfnsvsim64.obj
+	$(LINKCMD)
+
+gfnsvsim64.obj: gfnsvCUDA+.cpp
+	$(CC) $(CPPFLAGS) -DDEVICE_SIMULATION -Fo$@ $**
+
+!else
+
+all: gfnsvocl.exe gfnsvsim.exe
+
+gfnsvocl.exe: gfnsvocl.obj gsv_ocl.obj
+	$(LINKCMD) "$(OPENCLDIR)\lib\x86\OpenCL.lib"
 
 gfnsvsim.exe: gfnsvsim.obj
-	cl -nologo -Fm -Fe$@ $**
+	$(LINKCMD)
 
 gfnsvsim.obj: gfnsvCUDA+.cpp
 	$(CC) $(CPPFLAGS) -DDEVICE_SIMULATION -Fo$@ $**
+
+gfnsvocl.obj: gfnsvCUDA+.cpp
+	$(CC) $(CPPFLAGS) -DDEVICE_OPENCL -Fo$@ $**
+
+gsv_ocl.obj: gsv_ocl.cpp ocl_core_63.cl
+	$(CC) $(CPPFLAGS) gsv_ocl.cpp
+
+!endif
+
+clean:
+	-if exist *.obj del *.obj
+	-if exist *.map del *.map
+	-if exist *.exe del *.exe
