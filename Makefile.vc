@@ -2,40 +2,58 @@
 OPENCLDIR = C:\Program Files (x86)\AMD APP
 
 CPPFLAGS = $(CPPFLAGS) -nologo -c -O2 -DPLATFORM_WIN32 -GS- -W4 -I"$(OPENCLDIR)\include"
-CPPFLAGS = $(CPPFLAGS) -D_CRT_SECURE_NO_WARNINGS
+CPPFLAGS = $(CPPFLAGS) -D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE
 LINKCMD = cl -nologo -Fm -Fe$@ $**
 LINKCMD = $(LINKCMD) /link /DYNAMICBASE:NO
+CORECONVCMD = cscript //Nologo create_core.vbs $? $@
 
-!ifdef WIN64
+# MSVC2010 sets this for 64-bit command prompt. If not, define it on MAKE's command line.
+!if "$(PLATFORM)" == "X64"
 
-gfnsvsim64.exe: gfnsvsim64.obj
+obj = output_w64
+
+all: gfnsvocl_w64.exe gfnsvsim_w64.exe
+
+gfnsvsim_w64.exe: $(obj)/gfnsvsim.obj
 	$(LINKCMD)
 
-gfnsvsim64.obj: gfnsvCUDA+.cpp
-	$(CC) $(CPPFLAGS) -DDEVICE_SIMULATION -Fo$@ $**
+gfnsvocl_w64.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
+	$(LINKCMD) "$(OPENCLDIR)\lib\x86_64\OpenCL.lib"
 
 !else
 
-all: gfnsvocl.exe gfnsvsim.exe
+obj = output_w32
 
-gfnsvocl.exe: gfnsvocl.obj gsv_ocl.obj
+all: gfnsvocl_w32.exe gfnsvsim_w32.exe
+
+gfnsvocl_w32.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
 	$(LINKCMD) "$(OPENCLDIR)\lib\x86\OpenCL.lib"
 
-gfnsvsim.exe: gfnsvsim.obj
+gfnsvsim_w32.exe: $(obj)/gfnsvsim.obj
 	$(LINKCMD)
-
-gfnsvsim.obj: gfnsvCUDA+.cpp
-	$(CC) $(CPPFLAGS) -DDEVICE_SIMULATION -Fo$@ $**
-
-gfnsvocl.obj: gfnsvCUDA+.cpp
-	$(CC) $(CPPFLAGS) -DDEVICE_OPENCL -Fo$@ $**
-
-gsv_ocl.obj: gsv_ocl.cpp ocl_core_63.cl
-	$(CC) $(CPPFLAGS) gsv_ocl.cpp
 
 !endif
 
+$(obj)/gfnsvsim.obj: gfnsvCUDA+.cpp
+	$(CC) $(CPPFLAGS) -DDEVICE_SIMULATION -Fo$@ $**
+
+$(obj)/gfnsvocl.obj: gfnsvCUDA+.cpp
+	$(CC) $(CPPFLAGS) -DDEVICE_OPENCL     -Fo$@ $**
+
+$(obj)/gsv_ocl.obj: gsv_ocl.cpp core_63.tmp core_64.tmp core_79.tmp
+	$(CC) $(CPPFLAGS) -Fo$@ gsv_ocl.cpp
+
+core_63.tmp: ocl_core_63.cl
+	$(CORECONVCMD)
+
+core_64.tmp: ocl_core_64.cl
+	$(CORECONVCMD)
+
+core_79.tmp: ocl_core_79.cl
+	$(CORECONVCMD)
+
 clean:
-	-if exist *.obj del *.obj
+	-if exist $(obj)\*.obj del $(obj)\*.obj
 	-if exist *.map del *.map
 	-if exist *.exe del *.exe
+	-if exist *.tmp del *.tmp

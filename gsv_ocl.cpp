@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <ctype.h>
+#include <io.h>
 
 typedef uint32_t u32;
 
@@ -268,13 +270,33 @@ void ocl_cleanup_device(ocl_context_t *cont, bool full_cleanup)
   }
 }
 
-static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, const char *kernelName, const char *options)
+static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, const char *kernelName, const char *options, unsigned core)
 {
   cl_int status;
+
+  char corefile[64];
+  char *buf = NULL;
+  FILE *f;
+  sprintf(corefile, "ocl_core_%u.cl", core);
+  f = fopen(corefile, "rt");
+  if (f)
+  {
+    int flen = filelength(fileno(f));
+    if (flen > 0 && (buf = (char*)malloc(flen + 1)) != NULL)
+    {
+      fread(buf, flen, 1, f);
+      buf[flen] = 0;
+      programText = buf;
+    }
+    fclose(f);
+  }
 
   cont->program = clCreateProgramWithSource(cont->clcontext, 1, &programText, NULL, &status);
   if (ocl_diagnose(status, "clCreateProgramWithSource", cont) != CL_SUCCESS)
     return status;
+
+  if (buf)
+    free(buf);
 
   status = clBuildProgram(cont->program, 1, &cont->deviceID, options, NULL, NULL);
   // status = clBuildProgram(cont->program, 1, &cont->deviceID, "-cl-std=CL1.1", NULL, NULL);
@@ -288,15 +310,21 @@ static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, co
   {
     char *buf;
 
-    Log("Build Log (%d bytes):\n", log_size);
-    if (log_size && (buf = (char *) malloc(log_size)) != NULL)
+    if (log_size && (buf = (char *) malloc(log_size+1)) != NULL)
     {
       temp = clGetProgramBuildInfo(cont->program, cont->deviceID, CL_PROGRAM_BUILD_LOG, log_size, buf, NULL);
       ocl_diagnose(temp, "clGetProgramBuildInfo", cont);
-      buf[log_size-1] = '\0';
-//    for (unsigned i = 0; i < log_size && isspace(buf[i]); i++)
-//      ;
-      Log("%s\n", buf);
+      buf[log_size] = '\0';
+      /* Check if log contains something (not only whitespace) */
+      for (char *p = buf; *p; p++)
+      {
+        if (!isspace(*p))
+        {
+          Log("Build Log (%d bytes):\n", log_size);
+          Log("%s\n", buf);
+          break;
+        }
+      }
       free(buf);
     }
   }
@@ -318,9 +346,17 @@ static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, co
     if (ocl_diagnose(status, "clGetDeviceInfo(MAX_COMPUTE_UNITS)", cont) == CL_SUCCESS)
     {
       cont->runSizeMultiplier = prefm * cus /* * 4 */; //Hack for now. We need 4 wavefronts per CU to hide latency
-      Log("ocl_runSizeMultiplier set to 0x%X\n", cont->runSizeMultiplier);
+#ifdef VERBOSE
+      Log("ocl_runSizeMultiplier: 0x%04X\n", cont->runSizeMultiplier);
+#endif
     }
   }
+
+#ifdef VERBOSE
+  cl_ulong constmem;
+  if (clGetDeviceInfo(cont->deviceID, CL_DEVICE_MAX_CONSTANT_BUFFER_SIZE, sizeof(constmem), &constmem, NULL) == CL_SUCCESS)
+    Log("CL_MAX_CONSTANT_BUFFER_SIZE: %uK\n", (unsigned)(constmem / 1024));
+#endif
 
   return CL_SUCCESS;
 }
@@ -348,9 +384,17 @@ cl_int ocl_preconfigure(ocl_context_t *cont)
 
 static const char unknown_program[] = "#error Internal error: unknown core requested\n";
 
-#define MSTRINGIFY(A) #A
-static const char core_source_63[] = 
-#include "ocl_core_63.cl"
+static const char core_source_63[] =
+#include "core_63.tmp"
+;
+
+static const char core_source_64[] =
+#include "core_64.tmp"
+;
+
+static const char core_source_79[] =
+#include "core_79.tmp"
+;
 
 cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u32 iterations,
                         cl_mem fac_mult_ratio,  cl_mem init, u32 bmax, u32 count, cl_mem RES, u32 init_fac_shift,
@@ -360,6 +404,11 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u32 ite
 
   if (cont->coreID != core)
   {
+    /* Kernel change in progress, finish all pending operations */
+    status = ocl_diagnose( clFinish(cont->cmdQueue), "clFinish", cont );
+    if (status != CL_SUCCESS)
+      return status;
+
     ocl_cleanup_device(cont, false);
 
     /*
@@ -373,9 +422,11 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u32 ite
     switch (core)
     {
       case 63: program = core_source_63;  entry = "process63"; break;
+      case 64: program = core_source_64;  entry = "process64"; break;
+      case 79: program = core_source_79;  entry = "process79"; break;
       default: program = unknown_program; entry = "fake_entry"; break;
     }
-    status = ocl_build_program(cont, program, entry, options);
+    status = ocl_build_program(cont, program, entry, options, core);
     if (status != CL_SUCCESS)
       return status;
 
@@ -394,7 +445,24 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u32 ite
     if (ocl_diagnose(status, "setting kernel args", cont) != CL_SUCCESS)
       return status;
 
+#ifdef VERBOSE
     Log("Iterations requested: 0x%X\n", iterations);
+
+    size_t memsiz;
+    if (clGetMemObjectInfo(fac_mult_ratio, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
+      Log(" fac_mult_ratio: %uK\n", (unsigned)(memsiz / 1024));
+    if (clGetMemObjectInfo(init, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
+      Log("           init: %uK\n", (unsigned)(memsiz / 1024));
+    if (clGetMemObjectInfo(RES, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
+      Log("            RES: %uK\n", (unsigned)(memsiz / 1024));
+    if (fac_mult_ratio1)
+    {
+      if (clGetMemObjectInfo(fac_mult_ratio1, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
+        Log("fac_mult_ratio1: %uK\n", (unsigned)(memsiz / 1024));
+      if (clGetMemObjectInfo(init1, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
+        Log("          init1: %uK\n", (unsigned)(memsiz / 1024));
+    }
+#endif
 
     cont->coreID = core;
   }
