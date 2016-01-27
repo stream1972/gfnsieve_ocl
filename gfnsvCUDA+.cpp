@@ -83,6 +83,9 @@ static cudaError_t cudaMemcpyWrapper(void *dst, const void *src, size_t count)
 
 typedef uint32_t U32;
 typedef uint64_t U64;
+typedef U64 u64;
+typedef U32 u32;
+
 typedef U32 HALF[3];
 typedef U32 FULL[6];
 
@@ -90,8 +93,6 @@ typedef U32 FULL[6];
 
 #include <intrin.h>
 
-typedef unsigned long long int u64;
-typedef unsigned int u32;
 #define MY_TIME clock
 
 #endif
@@ -100,8 +101,6 @@ typedef unsigned int u32;
 
 #ifdef PLATFORM_LINUX
 
-typedef U64 u64;
-typedef U32 u32;
 #define MY_TIME my_custom_clock
 
 U64 __emulu(U64 a, U64 b)
@@ -141,12 +140,12 @@ static cl_int hostMemcpyWrapper(void *dest, const void *src, size_t size)
 	memcpy(dest, src, size);
 	return CL_SUCCESS;
 }
-/* Note: async copy */
+
 static cl_int copyToDeviceWrapper(cl_mem dest, void *src, size_t size, ocl_context_t *cont)
 {
 	cl_int status;
 
-	status = clEnqueueWriteBuffer(cont->cmdQueue, dest, CL_FALSE, 0, size, src, NULL, NULL, NULL);
+	status = clEnqueueWriteBuffer(cont->cmdQueue, dest, CL_TRUE, 0, size, src, NULL, NULL, NULL);
 	return ocl_diagnose(status, "clEnqueueWriteBuffer", cont);
 }
 #define cudaMemcpy_hth(dest, src, size, flags) hostMemcpyWrapper(dest, src, size)
@@ -1088,12 +1087,7 @@ void write_factor(FILE *fp, const HALF factor, U32 base, bool screen_out)
 	fprintf(fp, "%s\n", buf);
 
 	if (screen_out)
-	{
-		printf("%s", buf);
-		for(int i=strlen(buf); i < 78; i++)
-			printf(" ");
-		printf("\n");
-	}
+		printf("%-78s\n", buf);
 }
 
 static
@@ -1939,7 +1933,7 @@ void CUDA_error_exit(cudaError_t cudaError, int line)
 {
 	if(cudaError != cudaSuccess)
 	{
-		printf("CUDA Error %d @ %d: %s \n", cudaError, line, cudaGetErrorString(cudaError));
+		printf("GPU Error %d @ %d: %s \n", cudaError, line, cudaGetErrorString(cudaError));
 		if(gd.d_Result != NULL) cudaFree(gd.d_Result);
 		if(gd.h_Result != NULL) cudaFreeHost(gd.h_Result);
 		if(gd.d_Init != NULL) cudaFree(gd.d_Init);
@@ -2364,10 +2358,6 @@ int main(int argc, char *argv[])
 						print_status( tmpf );
 						write_checkpoint(last_processed_k+1); // might or might not write an actual checkpoint.
 
-						gd.factorsInBuffer = 0;
-						gd.candsInBuffer = 0;
-						gd.h_Result[0] = 0; // Only clear the counter
-
 						// The last kernel batch has been successfully handled.
 						// Before proceeding to the next batch... Should we?
 						// It is slightly inefficient in that, the CPU has been wasted to create a batch
@@ -2381,6 +2371,7 @@ int main(int argc, char *argv[])
 
 					// Execute a new batch
 					// The memcpy's are synchronous. The kernel is asynchronous.
+					gd.h_Result[0] = 0; // Only clear the counter
 					CUDA_error_exit( cudaMemcpy_htd(gd.d_Result, gd.h_Result, 1 * sizeof(u32), cudaMemcpyHostToDevice), __LINE__ );
 					CUDA_error_exit( cudaMemcpy_htd(gd.d_Init  , gd.h_Init  , cand_per_grid * sizeof(u64), cudaMemcpyHostToDevice), __LINE__ );
 					CUDA_error_exit( cudaMemcpy_htd(gd.d_Factor_Mult_Ratio, gd.h_Factor_Mult_Ratio,  fac_per_grid * sizeof(u64) * 3, cudaMemcpyHostToDevice), __LINE__ );
