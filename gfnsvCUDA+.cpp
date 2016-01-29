@@ -195,7 +195,8 @@ struct global_data {
 #endif
 #ifdef DEVICE_OPENCL
 	ocl_context_t *device_ctx;
-	int use_nvidia_workaround;
+	u32 use_nvidia_workaround;
+	bool timer_activated;
 #endif
 	U32 b_blocks_per_grid, blocks_per_grid;
 } gd;
@@ -1948,6 +1949,7 @@ void CUDA_error_exit(cudaError_t cudaError, int line)
 		if(gd.b_Factor_Mult_Ratio1!= NULL) cudaFreeHost(gd.b_Factor_Mult_Ratio1);
 #ifdef DEVICE_OPENCL
 		if (gd.device_ctx) ocl_cleanup_device(gd.device_ctx, true);
+		if (gd.timer_activated) timeEndPeriod(1);
 #endif
 
 		exit(1);
@@ -1958,7 +1960,7 @@ static
 void usage_exit()
 {
 #if defined(DEVICE_OPENCL)
-#define OPTIONS_EXTRA " [W]"
+#define OPTIONS_EXTRA " [W<n>]"
 #else
 #define OPTIONS_EXTRA ""
 #endif
@@ -1979,9 +1981,8 @@ void usage_exit()
 	printf("\tindicate the device to use. Defaults to 0 (i.e. Primary device).\n");
 	printf("\tEg:- use D1 to specify running on second GPU\n");
 #ifdef DEVICE_OPENCL
-	printf("W: activate workaround for high CPU usage on NVidia.\n");
-	printf("\tNote: in this mode you must run at least two copies of program\n");
-	printf("\tto fully utilize GPU.\n");
+	printf("W<n>: activate workaround for high CPU usage on NVidia. Optional.\n");
+	printf("\tW0 - do not use (default), W1 - activate.\n");
 #endif
 
 	exit(1);
@@ -2095,7 +2096,13 @@ void parse_params(int argc, char * argv[])
 			case 'W': // NVidia workaround
 
 			{
-				gd.use_nvidia_workaround = 1;
+				int wn = atoi(argv[i]+1);
+				if (!isnumeric(argv[i]+1) || wn < 0 || wn > 2)
+				{
+					printf("Bad value for workaround mode '%s'\n", argv[i]+1);
+					usage_exit();
+				}
+				gd.use_nvidia_workaround = wn;
 				break;
 			}
 #endif
@@ -2245,6 +2252,15 @@ int main(int argc, char *argv[])
 	}
 	CUDA_error_exit( ocl_preconfigure(gd.device_ctx), __LINE__ );
 	cl_event event_in_progress = NULL;
+	u64 last_kernel_time = 0;
+	u64 queued_tick = 0;
+
+	if (gd.use_nvidia_workaround)
+	{
+		// switch to high resolution (1ms) timer for exact sleep
+		timeBeginPeriod(1);
+		gd.timer_activated = true;
+	}
 #endif
 
 	CUDA_error_exit( cudaHostAlloc((void**)&gd.b_Factor_Mult_Ratio, fac_per_grid * sizeof(u64) * 3, 0), __LINE__ );
@@ -2303,32 +2319,26 @@ int main(int argc, char *argv[])
 #ifdef DEVICE_OPENCL
 						if (gd.use_nvidia_workaround)
 						{
-#if 1
-							for (;;)
-							{
-								cl_int ev_status;
+							u64 this_time;
 
-								CUDA_error_exit( ocl_diagnose( clGetEventInfo(event_in_progress, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(ev_status), &ev_status, NULL), "clGetEventInfo", gd.device_ctx ), __LINE__ );
-								if (ev_status < CL_COMPLETE)
-									CUDA_error_exit(ev_status, __LINE__);
-								if (ev_status == CL_COMPLETE)
-									break;
-								Sleep(1);
-							}
-#else // does not seems to work. either 100% CPU usage either very low GPU load and deadlock on termination.
-							cl_int ev_status;
-
-							ResetEvent(gd.ocl_system_event);
-							CUDA_error_exit( ocl_diagnose( clSetEventCallback(event_in_progress, CL_COMPLETE, ocl_event_callback, NULL), "clSetEventCallback", gd.device_ctx ), __LINE__ );
-							CUDA_error_exit( ocl_diagnose( clGetEventInfo(event_in_progress, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(ev_status), &ev_status, NULL), "clGetEventInfo", gd.device_ctx ), __LINE__ );
-							if (ev_status < CL_COMPLETE)
-								CUDA_error_exit(ev_status, __LINE__);
-							if (ev_status != CL_COMPLETE)
-								WaitForSingleObject(gd.ocl_system_event, INFINITE);
+							CUDA_error_exit( ocl_nvidia_wait_for_event(gd.use_nvidia_workaround, event_in_progress, last_kernel_time, queued_tick, gd.device_ctx), __LINE__ );
+							/* blocking buffer read now must block for a minimal time (less then 1 ms in ideal case */
+							CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+							CUDA_error_exit( ocl_get_kernel_exec_time(event_in_progress, &this_time, gd.device_ctx), __LINE__ );
+#if 0
+							static u32 counter;
+							if ((++counter & 127) == 0)
+								printf("\nKernel time: %u usec\n", (unsigned)(this_time / 1000));
 #endif
+							if (last_kernel_time == 0)  // first run
+								last_kernel_time = this_time;
+							last_kernel_time = (last_kernel_time + this_time) / 2;
 						}
-						/* otherwise, clEnqueueReadBuffer will automatically wait for completion of kernel since queue has "in-order" type */
-						CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+						else
+						{
+							/* otherwise, clEnqueueReadBuffer will automatically wait for completion of kernel since queue has "in-order" type */
+							CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+						}
 						CUDA_error_exit( ocl_diagnose( clReleaseEvent(event_in_progress), "clReleaseEvent", gd.device_ctx ), __LINE__ );
 #endif
 						U32 factor_count = gd.h_Result[0];
@@ -2476,7 +2486,7 @@ int main(int argc, char *argv[])
 							printf("\nUsing 63 bit core.\n\n");
 							core = 63;
 						}
-						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress
+						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress, &queued_tick
 							, gd.blocks_per_grid * THREADS_PER_BLOCK
 							, gd.d_Factor_Mult_Ratio
 							, gd.d_Init
@@ -2496,7 +2506,7 @@ int main(int argc, char *argv[])
 							printf("\nUsing 64 bit core.\n\n");
 							core = 64;
 						}
-						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress
+						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress, &queued_tick
 							, gd.blocks_per_grid * THREADS_PER_BLOCK
 							, gd.d_Factor_Mult_Ratio
 							, gd.d_Init
@@ -2518,7 +2528,7 @@ int main(int argc, char *argv[])
 						}
 						CUDA_error_exit( cudaMemcpy_htd(gd.d_Init1  , gd.h_Init1  , cand_per_grid * sizeof(u32), cudaMemcpyHostToDevice), __LINE__ );
 						CUDA_error_exit( cudaMemcpy_htd(gd.d_Factor_Mult_Ratio1, gd.h_Factor_Mult_Ratio1,  fac_per_grid * sizeof(u32) * 3, cudaMemcpyHostToDevice), __LINE__ );
-						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress
+						CUDA_error_exit( ocl_execute_core(core, gd.device_ctx, &event_in_progress, &queued_tick
 							, gd.blocks_per_grid * THREADS_PER_BLOCK
 							, gd.d_Factor_Mult_Ratio
 							, gd.d_Init
@@ -2561,6 +2571,7 @@ freeresources:
 	cudaFreeHost(gd.b_Factor_Mult_Ratio);
 #ifdef DEVICE_OPENCL
 	ocl_cleanup_device(gd.device_ctx, true);
+	if (gd.timer_activated) timeEndPeriod(1);
 #endif
 
 	return 0;

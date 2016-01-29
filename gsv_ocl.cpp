@@ -5,8 +5,14 @@
 #include <io.h>
 
 typedef uint32_t u32;
+typedef uint64_t u64;
 
 #include "gsv_ocl.h"
+
+#ifdef PLATFORM_WIN32
+  #define WIN32_LEAN_AND_MEAN
+  #include <windows.h>
+#endif
 
 #define Log printf
 
@@ -396,7 +402,7 @@ static const char core_source_79[] =
 #include "core_79.tmp"
 ;
 
-cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u32 iterations,
+cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u64 *pQueuedTime, u32 iterations,
                         cl_mem fac_mult_ratio,  cl_mem init, u32 bmax, u32 count, cl_mem RES, u32 init_fac_shift,
                         cl_mem fac_mult_ratio1, cl_mem init1)
 {
@@ -473,9 +479,157 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u32 ite
   if (ocl_diagnose(status, "clEnqueueNDRangeKernel", cont) != CL_SUCCESS)
     return status;
 
+  /* If requested, return system tick (transparent units) when command was queued */
+  if (pQueuedTime)
+  {
+    LARGE_INTEGER Now;
+    QueryPerformanceCounter(&Now);
+    *pQueuedTime = Now.QuadPart;
+  }
+
   status = clFlush(cont->cmdQueue);
   if (ocl_diagnose(status, "clFlush", cont) != CL_SUCCESS)
     return status;
 
+  return CL_SUCCESS;
+}
+
+cl_int ocl_nvidia_wait_for_event(u32 mode, cl_event event, u64 last_kernel_time, u64 queued_systick, ocl_context_t *cont)
+{
+/* Unfortunately, I cannot make following simple code to work.
+   For few first seconds, it uses 100% CPU, then CPU usage drops but
+   GPU performance becomes very poor (<50%) and finally it hangs on Ctrl-C.
+
+   cl_int ev_status;
+   ResetEvent(gd.ocl_system_event);
+   CUDA_error_exit( ocl_diagnose( clSetEventCallback(event_in_progress, CL_COMPLETE, ocl_event_callback, NULL), "clSetEventCallback", gd.device_ctx ), __LINE__ );
+   CUDA_error_exit( ocl_diagnose( clGetEventInfo(event_in_progress, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(ev_status), &ev_status, NULL), "clGetEventInfo", gd.device_ctx ), __LINE__ );
+   if (ev_status < CL_COMPLETE)
+      CUDA_error_exit(ev_status, __LINE__);
+   if (ev_status != CL_COMPLETE)
+      WaitForSingleObject(gd.ocl_system_event, INFINITE);
+
+(ocl_event_callback function will do SetEvent(gd.ocl_system_event))
+*/
+
+/*
+ * An idea behind this workaround is to sleep as close as possible to the average kernel
+ * execution time (which is more or less constant) so NVIDIA busy-loop will take small
+ * amount of time, less then 1ms. CPU usage of 5-10% is much better then 100%.
+ */
+  cl_int status;
+  cl_int reqd_event_status;
+
+#if 0
+  switch (mode)
+  {
+  case 1: // smart sleep
+    reqd_event_status = CL_RUNNING;
+    break;
+  case 2:
+    reqd_event_status = CL_COMPLETE; // just wait for completion
+    break;
+  default:
+    return CL_SUCCESS;
+  }
+#else
+  /* See comment below */
+  (void) mode;
+  (void) last_kernel_time;
+  (void) queued_systick;
+  reqd_event_status = CL_COMPLETE;
+#endif
+
+  /* Wait for kernel to be in required state */
+  for (;;)
+  {
+    cl_int ev_state;
+
+    status = ocl_diagnose( clGetEventInfo(event, CL_EVENT_COMMAND_EXECUTION_STATUS, sizeof(ev_state), &ev_state, NULL), "clGetEventInfo", cont );
+    if (status != CL_SUCCESS)
+      return status;
+    if (ev_state == CL_COMPLETE)  // done, no need to wait
+      return CL_SUCCESS;
+    if (ev_state < CL_COMPLETE)  // negative is an error code
+    {
+      ocl_diagnose(ev_state, "ev_state", cont);
+      return ev_state;
+    }
+    if (ev_state <= reqd_event_status)
+      break;
+#if 0
+  static u32 counter1;
+  if ((++counter1 & 63) == 0)
+    printf("\nEvent state: %d\n", (int)ev_state);
+#endif
+    Sleep(1);
+  }
+
+/*
+ * Alas, I wrote this shining piece of code just to find out that NVIDIA crap never
+ * gets info CL_RUNNING state! It jumps into CL_COMPLETE immediately from CL_SUBMITTED.
+ * So I disabled everything and reduced the function to simple Sleep(1) until event is complete.
+ * With high-resoluion 1ms system timer and high 'B' parameter, it works quite well.
+ */
+
+#if 0
+  /* Now get OCL timestamps for "Queued" and "Running" points */
+  cl_ulong queuedOclTime, startOclTime;
+
+  status = clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_QUEUED, sizeof(cl_ulong), &queuedOclTime, 0);
+  if (ocl_diagnose(status, "clGetEventProfilingInfo(COMMAND_QUEUED)", cont) != CL_SUCCESS)
+    return status;
+  status = clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &startOclTime, 0);
+  if (ocl_diagnose(status, "clGetEventProfilingInfo(COMMAND_START)", cont) != CL_SUCCESS)
+    return status;
+
+  /* Now we have delay between queueing and execution, along with expected kernel runtime (which is still running) */
+  u64 expected_run_time_usec = (startOclTime - queuedOclTime + last_kernel_time) / 1000;  // nanosec to usec
+
+  /* Find system time passed since queueing */
+  static LARGE_INTEGER Frequency;
+  if (Frequency.QuadPart == 0)
+    QueryPerformanceFrequency(&Frequency);
+
+  LARGE_INTEGER Now;
+  QueryPerformanceCounter(&Now);
+
+  u64 passed_usec = (Now.QuadPart - queued_systick) * 1000000 / Frequency.QuadPart;
+
+#if 1
+  static u32 counter;
+  if ((++counter & 63) == 0)
+    printf("\npassed_usec %u, expected_run_time_usec %u\n", (unsigned)passed_usec, (unsigned)expected_run_time_usec);
+#endif
+
+  /* should we sleep? */
+  if (passed_usec < expected_run_time_usec)
+  {
+    u64 sleep_usec = expected_run_time_usec - passed_usec;
+    if (sleep_usec >= 3000)
+      Sleep((u32)(sleep_usec / 1000)-2);
+  }
+#endif
+
+  return CL_SUCCESS;
+}
+
+/*
+ * Return time used by kernel in OpenCL ticks (nanoseconds)
+ */
+cl_int ocl_get_kernel_exec_time(cl_event event, u64 *pTime, ocl_context_t *cont)
+{
+  cl_int status;
+  cl_ulong startTime, endTime;
+
+  status = clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_START, sizeof(cl_ulong), &startTime, 0);
+  if (ocl_diagnose(status, "clGetEventProfilingInfo(COMMAND_START)", cont) != CL_SUCCESS)
+    return status;
+
+  status = clGetEventProfilingInfo(event, CL_PROFILING_COMMAND_END, sizeof(cl_ulong), &endTime, 0);
+  if (ocl_diagnose(status, "clGetEventProfilingInfo(COMMAND_END)", cont) != CL_SUCCESS)
+    return status;
+
+  *pTime = endTime - startTime;
   return CL_SUCCESS;
 }

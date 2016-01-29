@@ -18,7 +18,7 @@ gfnsvsim_w64.exe: $(obj)/gfnsvsim.obj
 	$(LINKCMD)
 
 gfnsvocl_w64.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
-	$(LINKCMD) "$(OPENCLDIR)\lib\x86_64\OpenCL.lib"
+	$(LINKCMD) "$(OPENCLDIR)\lib\x86_64\OpenCL.lib" WINMM.LIB
 
 !else
 
@@ -27,7 +27,7 @@ obj = output_w32
 all: gfnsvocl_w32.exe gfnsvsim_w32.exe
 
 gfnsvocl_w32.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
-	$(LINKCMD) "$(OPENCLDIR)\lib\x86\OpenCL.lib"
+	$(LINKCMD) "$(OPENCLDIR)\lib\x86\OpenCL.lib" WINMM.LIB
 
 gfnsvsim_w32.exe: $(obj)/gfnsvsim.obj
 	$(LINKCMD)
