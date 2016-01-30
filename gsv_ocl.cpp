@@ -95,8 +95,8 @@ ocl_context_t *ocl_get_context(int device)
 }
 
 // To debug on CPU...
-   #undef  CL_DEVICE_TYPE_GPU
-   #define CL_DEVICE_TYPE_GPU CL_DEVICE_TYPE_ALL
+// #undef  CL_DEVICE_TYPE_GPU
+// #define CL_DEVICE_TYPE_GPU CL_DEVICE_TYPE_ALL
 
 int ocl_initialize_devices(void)
 {
