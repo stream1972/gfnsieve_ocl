@@ -1,4 +1,6 @@
+#ifdef _MSC_VER
 #pragma warning(disable : 4996)
+#endif
 
 #define PROG_NAME			"GFNSvCUDA+"
 #ifdef DEVICE_CUDA
@@ -67,7 +69,7 @@ static cudaError_t cudaMemcpyWrapper(void *dst, const void *src, size_t count)
 #define cudaMemcpy_hth(dst, src, count, kind) cudaMemcpyWrapper(dst, src, count)
 #endif // DEVICE_SIMULATION
 
-#define PETA 1000000000000000
+#define PETA 1000000000000000ull
 
 #define RESULT_BUFFER_SIZE 10000
 #define RESULT_BUFFER_COUNT (RESULT_BUFFER_SIZE/2-1)
@@ -89,11 +91,14 @@ typedef U32 u32;
 typedef U32 HALF[3];
 typedef U32 FULL[6];
 
+typedef u64 MY_TICK;
+#define TICKS_PER_SEC 1000
+
 #ifdef PLATFORM_WIN32
 
 #include <intrin.h>
 
-#define MY_TIME clock
+#define MY_TIME GetTickCount
 
 #endif
 
@@ -103,9 +108,10 @@ typedef U32 FULL[6];
 
 #define MY_TIME my_custom_clock
 
-U64 __emulu(U64 a, U64 b)
+static
+U64 __emulu(U32 a, U32 b)
 {
-	return a*b;
+	return (U64)a*b;
 }
 
 #endif
@@ -181,7 +187,7 @@ struct global_data {
 	u32 *h_Init1;  cl_mem d_Init1;
 	u32 *h_Result; cl_mem d_Result;
 #endif
-	clock_t starttime;
+	MY_TICK starttime;
 	U32 startp_in_peta;
 	U32 endp_in_peta;
 	U32 bmax;
@@ -222,6 +228,7 @@ int jacobi(U32 m, U32 n)
 //******** S I E V I N G *********
 #define SP_COUNT 82000
 
+static
 struct sieve_prime_t {
 	U32 p;
 	U32 x; // index into array
@@ -297,6 +304,7 @@ void init_sieve_primes(U64 startk)
 #define SIEVE_SIZE 16384
 #define SIEVE_BITS (SIEVE_SIZE*sizeof(U32)*8)
 
+static
 U32 sieve[SIEVE_SIZE];
 
 static
@@ -334,6 +342,7 @@ static void calc_ratio(const HALF num, const HALF den, HALF ratio);
 #ifdef PLATFORM_WIN32
 #include <Windows.h>
 
+static
 volatile int term_requested = 0;
 
 static BOOL WINAPI CtrlHandler( DWORD fdwCtrlType )
@@ -348,17 +357,18 @@ static BOOL WINAPI CtrlHandler( DWORD fdwCtrlType )
 #ifdef PLATFORM_LINUX
 #include <signal.h>
 
-clock_t my_custom_clock()
+static
+MY_TICK my_custom_clock()
 {
 	timespec t;
 	clock_gettime(CLOCK_REALTIME, &t);
-	double tt = (double) t.tv_sec + (double) t.tv_nsec * 1.0e-9;
-
-	return (clock_t) (tt * CLOCKS_PER_SEC);
+	return (MY_TICK) t.tv_sec * TICKS_PER_SEC + t.tv_nsec / (1000000000 / TICKS_PER_SEC);
 }
 
+static
 volatile sig_atomic_t term_requested = 0;
 
+static
 void my_sig_handler(int sig)
 {
 	term_requested = 1;
@@ -888,7 +898,7 @@ void modFULLslow(const FULL a, HALF b) // b = a mod k.N1+1
 static
 void expmodHALF(U32 b, HALF ret) // compute b^k mod (k*N1+1)
 {
-	U64 q = 0x8000000000000000;
+	U64 q = 0x8000000000000000ull;
 
 	while ((q & gd.k) == 0) q >>= 1;
 
@@ -1057,9 +1067,9 @@ static
 void write_checkpoint(U64 k, bool force = false)
 {
 #ifndef DEVICE_SIMULATION
-	static clock_t next_write_time = 0;
+	static MY_TICK next_write_time = 0;
 
-	clock_t curr_time = MY_TIME();
+	MY_TICK curr_time = MY_TIME();
 
 	if (force || (curr_time > next_write_time)) {
 		FILE *fp = fopen(gd.ckpt, "w");
@@ -1071,7 +1081,7 @@ void write_checkpoint(U64 k, bool force = false)
 		fprintf(fp, "%" PRIu64 "", k);
 		fflush(fp);
 		fclose(fp);
-		next_write_time = curr_time + CLOCKS_PER_SEC * 60; // Write once a minute
+		next_write_time = curr_time + TICKS_PER_SEC * 60; // Write once a minute
 	}
 #else
 	/* Don't write durinf simulation to avoid occasional skip of a range */
@@ -1130,17 +1140,17 @@ void write_factor_header()
 static
 void print_status(HALF lastf)
 {
-	static clock_t next_status_time = 0;
+	static MY_TICK next_status_time = 0;
 	static U64 last_factor_count = 0;
 	static char status_line[80] = "";
 
-	clock_t curr_time = MY_TIME();
+	MY_TICK curr_time = MY_TIME();
 
 	U32 hh, mm, secs;
 	double speed, P_day;
 
 	if (curr_time >= next_status_time) {
-		speed = (double) (gd.stat * CLOCKS_PER_SEC) / (curr_time-gd.starttime);
+		speed = (double) (gd.stat * TICKS_PER_SEC) / (curr_time-gd.starttime);
 
 		P_day = speed * 86400.0 * log(cvt_dbl(lastf)) * (double) gd.N * 1.0e-15;
 
@@ -1165,7 +1175,7 @@ void print_status(HALF lastf)
 		fflush(stdout);
 		gd.starttime = curr_time;
 		gd.stat = 0;
-		next_status_time = curr_time + CLOCKS_PER_SEC * 3; // Write once every 3 sec
+		next_status_time = curr_time + TICKS_PER_SEC * 3; // Write once every 3 sec
 		last_factor_count = gd.factorcount;
 	}
 	else {
