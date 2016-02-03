@@ -737,7 +737,8 @@ void processk(U32 cand_per_fac)
 	}
 
 	if(qnr != -1) {
-		printf("\nUnable to find qnr for %s\n", HALF2Str(gd.the_f));
+// Too much questions asked
+//		printf("\nUnable to find qnr for %s\n", HALF2Str(gd.the_f));
 		return;
 	}
 
