@@ -117,6 +117,7 @@ int ocl_initialize_devices(void)
   {
     cl_platform_id *platforms = NULL;
     cl_device_id *devices = NULL;
+    char buf_name[256], buf_vendor[256];
 
     if (numPlatforms != 0)
     {
@@ -137,6 +138,12 @@ int ocl_initialize_devices(void)
         {
           cl_uint devcnt;
 
+          if (ocl_diagnose( clGetPlatformInfo(platforms[plat], CL_PLATFORM_NAME, sizeof(buf_name), buf_name, NULL), NULL, NULL ) != CL_SUCCESS)
+            *buf_name = 0;
+          if (ocl_diagnose( clGetPlatformInfo(platforms[plat], CL_PLATFORM_VENDOR, sizeof(buf_vendor), buf_vendor, NULL), NULL, NULL ) != CL_SUCCESS)
+            *buf_vendor = 0;
+          Log("Found OCL platform \"%s\" by \"%s\"\n", buf_name, buf_vendor);
+
           status = clGetDeviceIDs(platforms[plat], CL_DEVICE_TYPE_GPU, 0, NULL, &devcnt);
           if (status == CL_DEVICE_NOT_FOUND)  // Special case. No GPU devices but other may exist
           {
@@ -149,6 +156,7 @@ int ocl_initialize_devices(void)
             ocl_diagnose(status, NULL, NULL);  // decode error code only
             break;
           }
+          Log("  GPU devices on platform: %u\n", devcnt);
           devicesDetected += devcnt;
         }
       }
@@ -167,6 +175,9 @@ int ocl_initialize_devices(void)
       for (cl_uint plat = 0; plat < numPlatforms; plat++)
       {
         cl_uint devcnt;
+
+        if (offset >= devicesDetected)   /* Avoid call with bufferSize=0 for last platform without GPU devices */
+          break;
 
         status = clGetDeviceIDs(platforms[plat], CL_DEVICE_TYPE_GPU, devicesDetected - offset, devices + offset, &devcnt);
         if (status == CL_DEVICE_NOT_FOUND)  // Special case. No GPU devices but other may exist
@@ -197,6 +208,11 @@ int ocl_initialize_devices(void)
           cont->runSizeMultiplier = 64;
           cont->maxWorkSize       = 2048 * 2048;
 
+          status = clGetDeviceInfo(cont->deviceID, CL_DEVICE_NAME, sizeof(buf_name), buf_name, NULL);
+          if (ocl_diagnose(status, "clGetDeviceInfo(CL_DEVICE_NAME)", cont) != CL_SUCCESS)
+            *buf_name = 0;
+          Log("  D%u: \"%s\"\n", offset, buf_name);
+
           /* Sanity check: size_t must be same width for both client and device */
           cl_uint devbits;
           status = clGetDeviceInfo(cont->deviceID, CL_DEVICE_ADDRESS_BITS, sizeof(devbits), &devbits, NULL);
@@ -204,8 +220,13 @@ int ocl_initialize_devices(void)
             cont->active = false;
           else if (devbits != sizeof(size_t) * 8)
           {
-            Log("Error: Bitness of device %u (%u) does not match CPU (%u)!\n", u, devbits, sizeof(size_t) * 8);
-            cont->active = false;
+            if (sizeof(size_t) * 8 > devbits)  // Host 64, device 32 - use workarounds
+              Log("Warning: Bitness of device %u (%u) does not match CPU (%u), will try to work around\n", offset, devbits, sizeof(size_t) * 8);
+            else
+            {
+              Log("Error: Bitness of device %u (%u) does not match CPU (%u)!\n", offset, devbits, sizeof(size_t) * 8);
+              cont->active = false;
+            }
           }
         }
       }
@@ -276,14 +297,15 @@ void ocl_cleanup_device(ocl_context_t *cont, bool full_cleanup)
   }
 }
 
-static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, const char *kernelName, const char *options, unsigned core)
-{
-  cl_int status;
+static unsigned g_pipes_count;
 
+static char *try_load_core(const char *coreformat, unsigned core, unsigned pipes)
+{
   char corefile[64];
   char *buf = NULL;
   FILE *f;
-  sprintf(corefile, "ocl_core_%u.cl", core);
+
+  sprintf(corefile, coreformat, core);
   f = fopen(corefile, "rt");
   if (f)
   {
@@ -292,10 +314,26 @@ static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, co
     {
       fread(buf, flen, 1, f);
       buf[flen] = 0;
-      programText = buf;
+      g_pipes_count = pipes;
     }
     fclose(f);
   }
+  return buf;
+}
+
+static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, const char *kernelName, const char *options, unsigned core)
+{
+  cl_int status;
+
+  char *buf;
+  g_pipes_count = 1;
+  buf = try_load_core("ocl_core_%u.cl", core, 1);
+  if (buf == NULL)
+    buf = try_load_core("ocl_core_%u_p2.cl", core, 2);
+  if (buf == NULL)
+    buf = try_load_core("ocl_core_%u_p4.cl", core, 4);
+  if (buf)
+    programText = buf;
 
   cont->program = clCreateProgramWithSource(cont->clcontext, 1, &programText, NULL, &status);
   if (ocl_diagnose(status, "clCreateProgramWithSource", cont) != CL_SUCCESS)
@@ -308,7 +346,7 @@ static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, co
   // status = clBuildProgram(cont->program, 1, &cont->deviceID, "-cl-std=CL1.1", NULL, NULL);
   ocl_diagnose(status, "building cl program", cont);
 
-  size_t log_size;
+  size_t log_size = 0;  // preinit high word to work around bitness bug
   cl_int temp;
 
   temp = clGetProgramBuildInfo(cont->program, cont->deviceID, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
@@ -342,12 +380,12 @@ static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, co
     return status;
 
   /* Get a performance hint */
-  size_t prefm;
+  size_t prefm = 0;  // preinit high word to work around bitness bug
   status = clGetKernelWorkGroupInfo(cont->kernel, cont->deviceID, CL_KERNEL_PREFERRED_WORK_GROUP_SIZE_MULTIPLE,
                                     sizeof(prefm), &prefm, NULL);
   if (ocl_diagnose(status, "clGetKernelWorkGroupInfo", cont) == CL_SUCCESS)
   {
-    size_t cus;
+    size_t cus = 0;  // preinit high word to work around bitness bug
     status = clGetDeviceInfo(cont->deviceID, CL_DEVICE_MAX_COMPUTE_UNITS, sizeof(cus), &cus, NULL);
     if (ocl_diagnose(status, "clGetDeviceInfo(MAX_COMPUTE_UNITS)", cont) == CL_SUCCESS)
     {
@@ -454,7 +492,7 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u64 *pQ
 #ifdef VERBOSE
     Log("Iterations requested: 0x%X\n", iterations);
 
-    size_t memsiz;
+    size_t memsiz = 0;  // preinit high word to work around bitness bug
     if (clGetMemObjectInfo(fac_mult_ratio, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
       Log(" fac_mult_ratio: %uK\n", (unsigned)(memsiz / 1024));
     if (clGetMemObjectInfo(init, CL_MEM_SIZE, sizeof(memsiz), &memsiz, NULL) == CL_SUCCESS)
@@ -473,8 +511,8 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u64 *pQ
     cont->coreID = core;
   }
 
-  size_t globalWorkSize[1];
-  globalWorkSize[0] = iterations;
+  size_t globalWorkSize[1]; // Warning: 1D array only, or size_t bitness bug may be exposed!
+  globalWorkSize[0] = iterations / g_pipes_count;
   status = clEnqueueNDRangeKernel(cont->cmdQueue, cont->kernel, 1, NULL, globalWorkSize, NULL, 0, NULL, pEvent);
   if (ocl_diagnose(status, "clEnqueueNDRangeKernel", cont) != CL_SUCCESS)
     return status;
