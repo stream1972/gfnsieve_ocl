@@ -71,7 +71,24 @@ static cudaError_t cudaMemcpyWrapper(void *dst, const void *src, size_t count)
 
 #define PETA 1000000000000000ull
 
+// #define INIT_MODE   // uncomment to enable special sieve init mode (handle ranges below 1P)
+
+// #define BMAX_HARDCODED 100000000   // 100M harcoded for PG
+#define BMAX_HARDCODED 2000000000   // extra hard search PG
+
+#ifdef INIT_MODE
+/*
+ * Ranges below 1P will generate huge amount of factors. Output buffer must
+ * be able to store all of them. This is unneccessary for normal crunching
+ * (will only slow things down due to extra buffer copying)
+ *
+ * Even with this buffer, GFN-15 can be run at 'B5' only in 0-1P range!
+ * GFN-16 - at B6, and so on.
+ */
+#define RESULT_BUFFER_SIZE 2000000
+#else  // INIT_MODE
 #define RESULT_BUFFER_SIZE 10000
+#endif // INIT_MODE
 #define RESULT_BUFFER_COUNT (RESULT_BUFFER_SIZE/2-1)
 
 #if CUDART_VERSION >= 4000
@@ -2047,9 +2064,15 @@ void parse_params(int argc, char * argv[])
 //		printf("warning: even bmax expected. using %d\n", bmax);
 //	}
 //	gd.bmax = bmax;
-	gd.bmax = 100000000; // 100M harcoded for PG
+	gd.bmax = BMAX_HARDCODED; // whatever harcoded for PG
 
 	int st = atoi(argv[2]);
+#ifdef INIT_MODE
+	/* Accept magic word "INIT" to start at 0P (really - at value as small as possible) */
+	if (strcmp(argv[2], "INIT") == 0)
+		st = 0;
+	else
+#endif
 	if(errno || !isnumeric(argv[2]) || (st < 1) || (st > 604462908))
 	{
 		printf("Bad startp value %s\n", argv[2]);
@@ -2163,6 +2186,13 @@ int main(int argc, char *argv[])
 
 	startk = peta_to_k(gd.startp_in_peta); // approximation - might do 1 more k than necessary
 	endk = peta_to_k(gd.endp_in_peta);
+#ifdef INIT_MODE
+	/* In init mode, use min possible value for 'k' still usable by our sieve method.
+	   Min value of 'p' will be MAX_PRIME * 2^(N+1) = 2^20 * 2^(N+1) = 2^(20+N+1)
+	*/
+	if (startk == 0)
+		startk = MAX_PRIME;
+#endif
 	crossover63 = 1; crossover63 <<= 63 - (gd.n+1);
 	crossover64 = 1; crossover64 <<= 64 - (gd.n+1);
 	crossover71 = 1; crossover71 <<= 71 - (gd.n+1);
@@ -2360,10 +2390,10 @@ int main(int argc, char *argv[])
 							*/
 							if (factor_count > RESULT_BUFFER_COUNT)
 							{
-								printf( "\nFATAL ERROR: result buffer overflow.\n\n"
+								printf( "\nFATAL ERROR: result buffer overflow (%u/%u).\n\n"
 									"If error is repeatable at same 'p', try to decrease 'B' parameter\n"
-									"and contact author. Otherwise, it may be GPU overclock/overheat problem.\n"
-									);
+									"and contact author. Otherwise, it may be GPU overclock/overheat problem.\n",
+									factor_count, RESULT_BUFFER_COUNT);
 								CUDA_error_exit(-9999, __LINE__);
 							}
 #endif
