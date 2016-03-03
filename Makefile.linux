@@ -1,0 +1,32 @@
+plat := linux_$(shell uname -m)
+obj  := output_$(plat)
+
+CXXFLAGS := -DPLATFORM_LINUX -Wall -Wextra -O3
+LINKCMD  = $(CXX) -s -o $@ $^ -l rt
+CORECONVCMD = awk -f create_core.awk $< >$@
+
+all: gfnsvsim_$(plat) gfnsvocl_$(plat)
+
+gfnsvsim_$(plat): $(obj)/gfnsvsim.o
+	$(LINKCMD)
+
+gfnsvocl_$(plat): $(obj)/gfnsvocl.o $(obj)/gsv_ocl.o
+	$(LINKCMD) -lOpenCL
+
+$(obj)/gfnsvsim.o: gfnsvCUDA+.cpp
+	$(CXX) $(CXXFLAGS) -DDEVICE_SIMULATION -c -o $@ $<
+
+$(obj)/gfnsvocl.o: gfnsvCUDA+.cpp
+	$(CXX) $(CXXFLAGS) -DDEVICE_OPENCL     -c -o $@ $<
+
+$(obj)/gsv_ocl.o: gsv_ocl.cpp core_63.tmp core_64.tmp core_79.tmp
+	$(CXX) $(CXXFLAGS)                     -c -o $@ gsv_ocl.cpp
+
+core_63.tmp: ocl_core_63.cl
+	$(CORECONVCMD)
+
+core_64.tmp: ocl_core_64.cl
+	$(CORECONVCMD)
+
+core_79.tmp: ocl_core_79.cl
+	$(CORECONVCMD)

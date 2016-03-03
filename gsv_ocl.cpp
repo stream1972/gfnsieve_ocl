@@ -2,7 +2,10 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <io.h>
+#ifdef PLATFORM_LINUX
+#include <unistd.h>
+#define Sleep(n) usleep((n)*1000)
+#endif
 
 // #define VERBOSE
 
@@ -317,10 +320,11 @@ static char *try_load_core(const char *coreformat, unsigned core, unsigned pipes
   f = fopen(corefile, "rt");
   if (f)
   {
-    int flen = filelength(fileno(f));
+    int flen = fseek(f, 0, SEEK_END);   // filelength(fileno(f)) not supported on Linux
     if (flen > 0 && (buf = (char*)malloc(flen + 1)) != NULL)
     {
-      fread(buf, flen, 1, f);
+      fseek(f, 0, SEEK_SET);
+      flen = fread(buf, flen, 1, f);  // could return less then requested due to CR/LF translation on Windows
       buf[flen] = 0;
       g_pipes_count = pipes;
     }
@@ -372,7 +376,7 @@ static cl_int ocl_build_program(ocl_context_t *cont, const char* programText, co
       {
         if (!isspace(*p))
         {
-          Log("Build Log (%d bytes):\n", log_size);
+          Log("Build Log (%u bytes):\n", (unsigned)log_size);
           Log("%s\n", buf);
           break;
         }
@@ -525,6 +529,7 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u64 *pQ
   if (ocl_diagnose(status, "clEnqueueNDRangeKernel", cont) != CL_SUCCESS)
     return status;
 
+#if 0 // !!! Disabled because result is currently not used in nvidia_wait_for_event
   /* If requested, return system tick (transparent units) when command was queued */
   if (pQueuedTime)
   {
@@ -532,6 +537,9 @@ cl_int ocl_execute_core(u32 core, ocl_context_t *cont, cl_event *pEvent, u64 *pQ
     QueryPerformanceCounter(&Now);
     *pQueuedTime = Now.QuadPart;
   }
+#else
+  (void) pQueuedTime;
+#endif
 
   status = clFlush(cont->cmdQueue);
   if (ocl_diagnose(status, "clFlush", cont) != CL_SUCCESS)
@@ -582,7 +590,7 @@ cl_int ocl_nvidia_wait_for_event(u32 mode, cl_event event, u64 last_kernel_time,
   /* See comment below */
   (void) mode;
   (void) last_kernel_time;
-  (void) queued_systick;
+  (void) queued_systick;     // !!! also disabled in execute_core - be sure to re-enable it there if used
   reqd_event_status = CL_COMPLETE;
 #endif
 

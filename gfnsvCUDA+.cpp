@@ -167,7 +167,7 @@ static cl_int copyToDeviceWrapper(cl_mem dest, void *src, size_t size, ocl_conte
 {
 	cl_int status;
 
-	status = clEnqueueWriteBuffer(cont->cmdQueue, dest, CL_TRUE, 0, size, src, NULL, NULL, NULL);
+	status = clEnqueueWriteBuffer(cont->cmdQueue, dest, CL_TRUE, 0, size, src, 0, NULL, NULL);
 	return ocl_diagnose(status, "clEnqueueWriteBuffer", cont);
 }
 #define cudaMemcpy_hth(dest, src, size, flags) hostMemcpyWrapper(dest, src, size)
@@ -391,6 +391,15 @@ void my_sig_handler(int sig)
 	printf("\nTermination requested\n");
 	signal(sig, my_sig_handler);
 }
+
+#ifdef DEVICE_OPENCL
+/* These functions are used to enable fine-grade scheduler on Windows (n=1ms tick),
+ * Linux (at least on my machine :) seems to be OK by default.
+ */
+static void timeBeginPeriod(int n) { (void) n; }
+static void timeEndPeriod(int n)   { (void) n; }
+#endif
+
 #endif // PLATFORM_LINUX
 
 static
@@ -1016,9 +1025,8 @@ U64 read_last_factor()
 		return 0;
 	}
 
-	while(!feof(fp)) {
-		fgets(buf, sizeof(buf)-1, fp);
-	}
+	while (fgets(buf, sizeof(buf)-1, fp) != NULL)
+		/* nothing */ ;
 	fclose(fp);
 
 
