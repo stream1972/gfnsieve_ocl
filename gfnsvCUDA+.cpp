@@ -27,7 +27,6 @@
 #include <math.h>
 #include <time.h>
 #include <string.h>
-#include <errno.h>
 #include <ctype.h>
 
 #if defined(DEVICE_CUDA) + defined(DEVICE_OPENCL) + defined(DEVICE_SIMULATION) != 1
@@ -2045,7 +2044,7 @@ void parse_params(int argc, char * argv[])
 	}
 
 	int n = atoi(argv[1]);
-	if(errno || !isnumeric(argv[1]) || (n < 15) || (n > 24))
+	if(!isnumeric(argv[1]) || (n < 15) || (n > 24))
 	{
 		printf("Bad n value %s\n", argv[1]);
 		usage_exit();
@@ -2053,7 +2052,7 @@ void parse_params(int argc, char * argv[])
 	gd.n = n;
 
 //	int bmax = atoi(argv[2]);
-//	if(errno || !isnumeric(argv[2]) || (bmax < 2))
+//	if(!isnumeric(argv[2]) || (bmax < 2))
 //	{
 //		printf("Bad bmax value %s\n", argv[2]);
 //		usage_exit();
@@ -2073,7 +2072,7 @@ void parse_params(int argc, char * argv[])
 		st = 0;
 	else
 #endif
-	if(errno || !isnumeric(argv[2]) || (st < 1) || (st > 604462908))
+	if(!isnumeric(argv[2]) || (st < 1) || (st > 604462908))
 	{
 		printf("Bad startp value %s\n", argv[2]);
 		usage_exit();
@@ -2081,7 +2080,7 @@ void parse_params(int argc, char * argv[])
 	gd.startp_in_peta = st;
 
 	int en = atoi(argv[3]);
-	if(errno || !isnumeric(argv[3]) || (en <= st) || (en > 604462909))
+	if(!isnumeric(argv[3]) || (en <= st) || (en > 604462909))
 	{
 		printf("Bad endp value %s\n", argv[3]);
 		usage_exit();
@@ -2101,7 +2100,7 @@ void parse_params(int argc, char * argv[])
 			{
 				int bn = atoi(argv[i]+1);
 
-				if(errno || !isnumeric(argv[i]+1) || bn < 5 || bn > 13)
+				if(!isnumeric(argv[i]+1) || bn < 5 || bn > 13)
 				{
 					printf("Bad value for block size '%s'\n", argv[i]+1);
 					usage_exit();
@@ -2116,7 +2115,7 @@ void parse_params(int argc, char * argv[])
 			{
 				int dn = atoi(argv[i]+1);
 
-				if(errno || !isnumeric(argv[i]+1) || dn < 0)
+				if(!isnumeric(argv[i]+1) || dn < 0)
 				{
 					printf("Bad value for device number '%s'\n", argv[i]+1);
 					usage_exit();
