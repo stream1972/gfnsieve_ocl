@@ -65,17 +65,18 @@ You must run at least two processes on different ranges, until you reach
 100% GPU usage.
 
 For example, a GTX750ti GPU can do 55 P/day at fastest core (see below for
-cores). Let's compare this value with speed of CPU (i7-4770K at 4000 MHz):
+cores). Let's compare this value with speed of CPU (i7-4770K at 4000 MHz),
+sieving range 10000P-10001P (lower ranges are a bit faster).
 
 -------------+--------------------------------------------------------------
-   Program   | GFN-15   16     17     18     19      20       21     22
+   Program   | GFN-15   16     17     18     19     20      21     22
 -------------+--------------------------------------------------------------
-gfnsvocl_w32 |   7.6   15.3   28.6   56.5   111.7   219.0   422.0   782.0
-gfnsvocl_w64 |  12.1   24.5   44.6   88.0   174.7   342.0   660.0   1220.0
+gfnsvsim_w32 |  13.9   27.8   51.7  102.4  204.2  401.0   774.0  1453.0
+gfnsvsim_w64 |  20.9   41.8   76.8  152.7  301.6  591.0  1145.0  2157.0
 -------------+--------------------------------------------------------------
 
 As can be seen from the table, to fully utilize this quite average GPU at
-GFN-16, four instances of 32-bit or three instances of 64-bit program must
+GFN-15, four instances of 32-bit or three instances of 64-bit program must
 be run. A GFN-18 and above can be served by a single instance. It's also
 clear that 64-bit version of the program must be used whenever possible.
 
