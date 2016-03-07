@@ -36,6 +36,12 @@
 #ifdef DEVICE_CUDA
 #include <cuda.h>
 #include <cuda_runtime.h>
+
+#define cudaMalloc_ro  cudaMalloc
+#define cudaMalloc_rw  cudaMalloc
+#define cudaMemcpy_htd cudaMemcpy
+#define cudaMemcpy_hth cudaMemcpy
+
 #endif
 
 #ifdef DEVICE_SIMULATION
