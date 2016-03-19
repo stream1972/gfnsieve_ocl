@@ -1,4 +1,9 @@
-# Path to OpenCL toolkit (if compiler cannot be seen with default settings)
+#
+# MSVC Makefile for OpenCL and CUDA versions.
+# By default, OpenCL is built. To build CUDA, run "nmake /f Makefile.vc cuda"
+#
+
+# Path to OpenCL toolkit (if compiler cannot find it with default settings)
 OPENCLDIR = C:\Program Files (x86)\AMD APP
 
 CPPFLAGS = $(CPPFLAGS) -nologo -c -O2 -DPLATFORM_WIN32 -GS- -W4 -I"$(OPENCLDIR)\include"
@@ -7,6 +12,23 @@ LINKCMD = cl -nologo -Fm -Fe$@ $**
 LINKCMD = $(LINKCMD) /link /DYNAMICBASE:NO
 CORECONVCMD = cscript //Nologo create_core.vbs $? $@
 
+#
+# CUDA settings
+#
+NVCC = nvcc
+NVCCFLAGS  = -DPLATFORM_WIN32 -O2 --compiler-options -GS-,-W4 --linker-options /DYNAMICBASE:NO
+# select GPU architectures to generate code. Most of them will generate same code
+# so only unique ones (compare .ptx files in temp dir to find out) are enabled.
+# NVCCFLAGS  = $(NVCCFLAGS) --keep --keep-dir temp
+NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_20,code=compute_20
+# NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_30,code=compute_30
+NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_32,code=compute_32
+NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_35,code=compute_35
+# NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_50,code=compute_50
+# NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_52,code=compute_52
+# NVCCFLAGS  = $(NVCCFLAGS) --generate-code arch=compute_53,code=compute_53
+
+
 # MSVC2010 sets this for 64-bit command prompt. If not, define it on MAKE's command line.
 !if "$(PLATFORM)" == "X64"
 
@@ -14,11 +36,21 @@ obj = output_w64
 
 all: gfnsvocl_w64.exe gfnsvsim_w64.exe
 
+cuda: gfnsvcuda_w64.exe
+
 gfnsvsim_w64.exe: $(obj)/gfnsvsim.obj
 	$(LINKCMD)
 
 gfnsvocl_w64.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
 	$(LINKCMD) "$(OPENCLDIR)\lib\x86_64\OpenCL.lib" WINMM.LIB
+
+gfnsvcuda_w64.exe: gfnsvCUDA+.cpp
+	$(NVCC) $(NVCCFLAGS) -x cu -DDEVICE_CUDA -o $@ $**
+
+# By default, NVCC-based simulator is not required, but it can be built to check
+# that speed matches MSVC version (i.e. host optimization options are correct).
+gfnsvsim_nvcc_w64.exe: gfnsvCUDA+.cpp
+	$(NVCC) $(NVCCFLAGS) -x cu -DDEVICE_SIMULATION -o $@ $**
 
 !else
 
@@ -26,11 +58,23 @@ obj = output_w32
 
 all: gfnsvocl_w32.exe gfnsvsim_w32.exe
 
+cuda: gfnsvcuda_w32.exe
+
 gfnsvocl_w32.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
 	$(LINKCMD) "$(OPENCLDIR)\lib\x86\OpenCL.lib" WINMM.LIB
 
 gfnsvsim_w32.exe: $(obj)/gfnsvsim.obj
 	$(LINKCMD)
+
+NVCCFLAGS = $(NVCCFLAGS) -m 32
+
+gfnsvcuda_w32.exe: gfnsvCUDA+.cpp
+	$(NVCC) $(NVCCFLAGS) -x cu -DDEVICE_CUDA -o $@ $**
+
+# By default, NVCC-based simulator is not required, but it can be built to check
+# that speed matches MSVC version (i.e. host optimization options are correct).
+gfnsvsim_nvcc_w32.exe: gfnsvCUDA+.cpp
+	$(NVCC) $(NVCCFLAGS) -x cu -DDEVICE_SIMULATION -o $@ $**
 
 !endif
 

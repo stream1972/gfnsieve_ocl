@@ -45,22 +45,26 @@
 #endif
 
 #ifdef DEVICE_SIMULATION
+#ifndef __NVCC__  // seems to be pre-included in NVCC
 typedef enum
 {
 	cudaSuccess,
 	cudaErrorMissingConfiguration,
 	cudaErrorMemoryAllocation
 } cudaError_t;
+#endif
 #define cudaGetErrorString(n) "Fake CUDA error"
 
 /* For simulation, all memory is allocated on PC using plain malloc/free */
-static void cudaFreeHost(void *p) { if (p) free(p); }
+static void cudaFreeHost_wrapper(void *p) { if (p) free(p); }
+#define cudaFreeHost cudaFreeHost_wrapper
 #define cudaFree cudaFreeHost
-static cudaError_t cudaMalloc(void **pHost, size_t size)
+static cudaError_t cudaMalloc_wrapper(void **pHost, size_t size)
 {
 	*pHost = malloc(size);
 	return *pHost ? cudaSuccess : cudaErrorMemoryAllocation;
 }
+#define cudaMalloc    cudaMalloc_wrapper
 #define cudaMalloc_ro cudaMalloc
 #define cudaMalloc_rw cudaMalloc
 #define cudaHostAlloc(p, n, f) cudaMalloc(p, n)
@@ -78,8 +82,10 @@ static cudaError_t cudaMemcpyWrapper(void *dst, const void *src, size_t count)
 
 // #define INIT_MODE   // uncomment to enable special sieve init mode (handle ranges below 1P)
 
+#ifndef BMAX_HARDCODED
 // #define BMAX_HARDCODED 100000000   // 100M harcoded for PG
 #define BMAX_HARDCODED 2000000000   // extra hard search PG
+#endif
 
 #ifdef INIT_MODE
 /*
@@ -1275,12 +1281,14 @@ __device__ static unsigned int __mad(unsigned int a, unsigned int b, unsigned in
   return r;
 }
 
+#if 0 // Unused
 __device__ static unsigned int __madhi(unsigned int a, unsigned int b, unsigned int c)
 {
   unsigned int r;
   asm volatile ("mad.hi.cc.u32 %0, %1, %2, %3;" : "=r" (r) : "r" (a) , "r" (b), "r" (c));
   return r;
 }
+#endif
 
 __device__ static unsigned int __madc(unsigned int a, unsigned int b, unsigned int c)
 {
