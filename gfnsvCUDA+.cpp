@@ -933,13 +933,13 @@ void modFULLslow(const FULL a, HALF b) // b = a mod k.N1+1
 }
 
 static
-void expmodHALF(U32 b, HALF ret) // compute b^k mod (k*N1+1)
+void expmodHALF(U32 b, HALF e /* ret */) // compute b^k mod (k*N1+1)
 {
 	U64 q = 0x8000000000000000ull;
 
 	while ((q & gd.k) == 0) q >>= 1;
 
-	HALF e;
+//	HALF e;
 	FULL f;
 
 	initHALF(e, b);
@@ -956,13 +956,13 @@ void expmodHALF(U32 b, HALF ret) // compute b^k mod (k*N1+1)
 		q >>= 1;
 	}
 
-	copyHALF( ret, e );
+//	copyHALF( ret, e );
 }
 
 static
-void expmodHALFcheck(const HALF init, HALF ret) // compute init^N mod (k*N1+1)
+void expmodHALFcheck(const HALF init, HALF e /* ret */) // compute init^N mod (k*N1+1)
 {
-	HALF e;
+//	HALF e;
 	FULL f;
 
 	copyHALF(e,  init);
@@ -973,7 +973,7 @@ void expmodHALFcheck(const HALF init, HALF ret) // compute init^N mod (k*N1+1)
 		modFULLslow(f, e);
 	}
 
-	copyHALF( ret, e );
+//	copyHALF( ret, e );
 }
 
 
