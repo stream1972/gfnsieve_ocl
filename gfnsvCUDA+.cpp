@@ -1118,6 +1118,12 @@ void write_checkpoint(U64 k, bool force = false)
 		fflush(fp);
 		fclose(fp);
 		next_write_time = curr_time + TICKS_PER_SEC * 60; // Write once a minute
+
+		if (!term_requested && (fp = fopen("exitgfn.now", "r")) != NULL) {
+			fclose(fp);
+			term_requested = 1;
+			printf("\nFound exit flag file\n");
+		}
 	}
 #else
 	/* Don't write durinf simulation to avoid occasional skip of a range */
