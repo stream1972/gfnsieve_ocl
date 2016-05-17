@@ -871,7 +871,8 @@ int Str2HALF(const char *s, HALF a, U32 * peta)
 	HALF tmp; initHALF(tmp, lo_peta);
 	addHALF(a, tmp);
 
-	*peta = hi_peta;
+	if (peta)
+		*peta = hi_peta;
 
 	return 0;
 }
@@ -1027,7 +1028,7 @@ void calc_ratio(const HALF num, const HALF den, HALF ratio)
 static
 U64 read_last_factor()
 {
-	char buf[80] = "";
+	char buf[80];
 
 	printf("Reading factor file for last factor\n");
 
@@ -1037,24 +1038,28 @@ U64 read_last_factor()
 		return 0;
 	}
 
-	while (fgets(buf, sizeof(buf)-1, fp) != NULL)
-		/* nothing */ ;
+	/* Find last valid line in the file (end of file could be corrupted after crash) */
+	U64 k = 0; char lastfactor[80];
+	*buf = 0;
+	while (fgets(buf, sizeof(buf)-1, fp) != NULL) {
+		char tmpbuf[80]; HALF f;
+		if (strchr(buf, '|') && sscanf(buf, "%s", tmpbuf) == 1 && Str2HALF(tmpbuf, f, NULL) == 0 && f[0]%gd.N1 == 1) {
+			shrHALF(f, gd.n+1);
+			k = cvt_q(f);  /* Note 1 */
+			strcpy(lastfactor, tmpbuf);
+			/* [1] Since sieve is restarted from SAME value as last factor, last factor will be duped.
+			 * This is kind of intentional because file could be corrupted and duplication increases
+			 * chances that at least one of these lines (near corrupted area) could be parsed later. */
+		}
+	}
 	fclose(fp);
-
-
-	U64 k = 0; char tmpbuf[80] = ""; HALF f; U32 peta = 0;
-	if(strchr(buf, '|') && sscanf(buf, "%s", tmpbuf) == 1 && Str2HALF(tmpbuf, f, &peta) == 0 && f[0]%gd.N1 == 1) {
-		printf("Found factor %s\n", tmpbuf);
-		shrHALF(f, gd.n+1);
-		k = cvt_q(f);
-	}
-	else {
-		k = 0;
-	}
 
 	if(k == 0) {
 		printf("Unable to extract a factor from factor file. Last read line was:\n'%s'\n", buf);
+	} else {
+		printf("Found factor %s\n", lastfactor);
 	}
+
 	return k;
 }
 
@@ -1079,7 +1084,7 @@ U64 read_checkpoint(U64 startk, U64 endk)
 	else {
 		HALF startf; initHALF(startf, startk); shlHALF(startf, gd.n+1); startf[0]++;
 
-		HALF tmp; U32 p_val = 0; Str2HALF(buf, tmp, &p_val);
+		HALF tmp; Str2HALF(buf, tmp, NULL);
 
 		// This if statement allows restarting from both factor as well as k value
 		if(cmpHALF(tmp,startf) >= 0) {
