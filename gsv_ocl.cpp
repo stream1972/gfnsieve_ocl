@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <ctype.h>
-#ifdef PLATFORM_LINUX
+#if defined (PLATFORM_LINUX) || defined (PLATFORM_MAC)
 #include <unistd.h>
 #define Sleep(n) usleep((n)*1000)
 #endif

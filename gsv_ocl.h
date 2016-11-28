@@ -1,4 +1,8 @@
-#include <CL/cl.h>
+#if defined(PLATFORM_MAC)
+#  include <OpenCL/cl.h>
+#else
+#  include <CL/cl.h>
+#endif
 
 enum
 {
