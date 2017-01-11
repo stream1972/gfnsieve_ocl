@@ -132,7 +132,7 @@ typedef u64 MY_TICK;
 
 
 
-#ifdef PLATFORM_LINUX
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_MAC)
 
 #define MY_TIME my_custom_clock
 
@@ -353,7 +353,7 @@ void sieve_iteration()
 
 //******** END S I E V I N G END *********
 
-#if !defined PLATFORM_WIN32 && !defined PLATFORM_LINUX
+#if !defined PLATFORM_WIN32 && !defined PLATFORM_LINUX && !defined PLATFORM_MAC
 #error No platforms defined
 #endif
 
@@ -382,7 +382,7 @@ static BOOL WINAPI CtrlHandler( DWORD fdwCtrlType )
 }
 #endif // PLATFORM_WIN32
 
-#ifdef PLATFORM_LINUX
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_MAC)
 #include <signal.h>
 
 static
@@ -412,7 +412,7 @@ static void timeBeginPeriod(int n) { (void) n; }
 static void timeEndPeriod(int n)   { (void) n; }
 #endif
 
-#endif // PLATFORM_LINUX
+#endif // PLATFORM_LINUX || PLATFORM_MAC
 
 static
 U64 cvt_q(const HALF h)
@@ -2252,7 +2252,7 @@ int main(int argc, char *argv[])
 #ifdef PLATFORM_WIN32
 	SetConsoleCtrlHandler( CtrlHandler, TRUE );
 #endif
-#ifdef PLATFORM_LINUX
+#if defined(PLATFORM_LINUX) || defined(PLATFORM_MAC)
 	signal( SIGINT, my_sig_handler );
 	signal( SIGTERM, my_sig_handler );
 #endif
