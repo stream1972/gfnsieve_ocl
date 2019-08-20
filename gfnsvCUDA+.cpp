@@ -93,14 +93,15 @@ static cudaError_t cudaMemcpyWrapper(void *dst, const void *src, size_t count)
  * be able to store all of them. This is unneccessary for normal crunching
  * (will only slow things down due to extra buffer copying)
  *
- * Even with this buffer, GFN-15 can be run at 'B5' only in 0-1P range!
- * GFN-16 - at B6, and so on.
+ * Even with this buffer, it's recommended to run 0-1P range in 'B5' mode.
+ * It may be necessary to increase buffer size further for low N (N < 17).
  */
-#define RESULT_BUFFER_SIZE 2000000
+#define RESULT_BUFFER_SIZE 32000000
 #else  // INIT_MODE
 #define RESULT_BUFFER_SIZE 10000
 #endif // INIT_MODE
 #define RESULT_BUFFER_COUNT (RESULT_BUFFER_SIZE/2-1)
+#define RESULT_BUFFER_WORDS(nResults)  (((nResults)+1) * 2)  // rounded up to 8 bytes
 
 #if CUDART_VERSION >= 4000
 #define SYNC_CALL cudaDeviceSynchronize
@@ -1173,6 +1174,7 @@ void write_factor_batch(U32 factor_count)
 static
 void write_factor_header()
 {
+#ifndef DEVICE_SIMULATION
 	FILE *fp = fopen(gd.fact, "a");
 	if (fp == NULL) {
 		printf("Unable to write to factor file\n");
@@ -1182,6 +1184,7 @@ void write_factor_header()
 	fprintf(fp, "GFN Sieve for k^%u+1 [k == 2 to %u]\n\n", gd.N, gd.bmax);
 	fflush(fp);
 	fclose(fp);
+#endif
 }
 
 static
@@ -2195,6 +2198,22 @@ void parse_params(int argc, char * argv[])
 	printf("Using checkpoint file '%s'\n", gd.ckpt);
 }
 
+#ifdef DEVICE_OPENCL
+static void read_output_buffer(void)
+{
+#ifdef INIT_MODE
+	/* buffer is very large, read only used part */
+	unsigned n;
+	CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, 1 * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+	n = gd.h_Result[0];  // results in buffer
+	if (n > RESULT_BUFFER_COUNT) n = RESULT_BUFFER_COUNT;
+	n = RESULT_BUFFER_WORDS(n);  // u32 words for these results
+	CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, n * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+#else
+	CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+#endif
+}
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -2219,11 +2238,15 @@ int main(int argc, char *argv[])
 	startk = peta_to_k(gd.startp_in_peta); // approximation - might do 1 more k than necessary
 	endk = peta_to_k(gd.endp_in_peta);
 #ifdef INIT_MODE
-	/* In init mode, use min possible value for 'k' still usable by our sieve method.
-	   Min value of 'p' will be MAX_PRIME * 2^(N+1) = 2^20 * 2^(N+1) = 2^(20+N+1)
-	*/
+	// (R.T.) The CPU part of algorithm is unacceptable slow at small k (p),
+	// you will need to pre- or post-sieve with other methods.
+	// For GFN-17 stable point is k=16384, which is equal to p = 16384*2^(17+1) = 4294967296,
+	// This magic value definitely should have a mathematical explanation,
+	// which most probably is "p > 2^32", but I din't looked in it too deep.
+	// Also I didn't tested completeness of factors found near critical point for
+	// all sieves except GFN-17.
 	if (startk == 0)
-		startk = MAX_PRIME;
+		startk = (u64)(1 << (32-(gd.n+1)));  // so 1 << (gd.n+1) == 2^32
 #endif
 	crossover63 = 1; crossover63 <<= 63 - (gd.n+1);
 	crossover64 = 1; crossover64 <<= 64 - (gd.n+1);
@@ -2396,7 +2419,7 @@ int main(int argc, char *argv[])
 
 							CUDA_error_exit( ocl_nvidia_wait_for_event(gd.use_nvidia_workaround, event_in_progress, last_kernel_time, queued_tick, gd.device_ctx), __LINE__ );
 							/* blocking buffer read now must block for a minimal time (less then 1 ms in ideal case */
-							CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+							read_output_buffer();
 							CUDA_error_exit( ocl_get_kernel_exec_time(event_in_progress, &this_time, gd.device_ctx), __LINE__ );
 #if 0
 							static u32 counter;
@@ -2410,7 +2433,7 @@ int main(int argc, char *argv[])
 						else
 						{
 							/* otherwise, clEnqueueReadBuffer will automatically wait for completion of kernel since queue has "in-order" type */
-							CUDA_error_exit( ocl_diagnose( clEnqueueReadBuffer(gd.device_ctx->cmdQueue, gd.d_Result, CL_TRUE, 0, RESULT_BUFFER_SIZE * sizeof(u32), gd.h_Result, 0, NULL, NULL), "clEnqueueReadBuffer", gd.device_ctx ), __LINE__ );
+							read_output_buffer();
 						}
 						CUDA_error_exit( ocl_diagnose( clReleaseEvent(event_in_progress), "clReleaseEvent", gd.device_ctx ), __LINE__ );
 #endif

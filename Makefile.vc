@@ -44,6 +44,9 @@ gfnsvsim_w64.exe: $(obj)/gfnsvsim.obj
 gfnsvocl_w64.exe: $(obj)/gfnsvocl.obj $(obj)/gsv_ocl.obj
 	$(LINKCMD) "$(OPENCLDIR)\lib\x86_64\OpenCL.lib" WINMM.LIB
 
+gfnsvocl_w64_init.exe: $(obj)/gfnsvocl_init.obj $(obj)/gsv_ocl.obj
+	$(LINKCMD) "$(OPENCLDIR)\lib\x86_64\OpenCL.lib" WINMM.LIB
+
 gfnsvcuda_w64.exe: gfnsvCUDA+.cpp
 	$(NVCC) $(NVCCFLAGS) -x cu -DDEVICE_CUDA -o $@ $**
 
@@ -83,6 +86,9 @@ $(obj)/gfnsvsim.obj: gfnsvCUDA+.cpp
 
 $(obj)/gfnsvocl.obj: gfnsvCUDA+.cpp
 	$(CC) $(CPPFLAGS) -DDEVICE_OPENCL     -Fo$@ $**
+
+$(obj)/gfnsvocl_init.obj: gfnsvCUDA+.cpp
+	$(CC) $(CPPFLAGS) -DDEVICE_OPENCL -DINIT_MODE -Fo$@ $**
 
 $(obj)/gsv_ocl.obj: gsv_ocl.cpp core_63.tmp core_64.tmp core_79.tmp
 	$(CC) $(CPPFLAGS) -Fo$@ gsv_ocl.cpp
