@@ -321,12 +321,15 @@ static char *try_load_core(const char *coreformat, unsigned core, unsigned pipes
   if (f)
   {
     int flen = fseek(f, 0, SEEK_END);   // filelength(fileno(f)) not supported on Linux
+    if (flen == 0)  // it was status of fseek (0/-1), now get real length
+      flen = ftell(f);
     if (flen > 0 && (buf = (char*)malloc(flen + 1)) != NULL)
     {
       fseek(f, 0, SEEK_SET);
-      flen = fread(buf, flen, 1, f);  // could return less then requested due to CR/LF translation on Windows
+      flen = (int)fread(buf, 1, flen, f);  // could return less then requested due to CR/LF translation on Windows
       buf[flen] = 0;
       g_pipes_count = pipes;
+      Log("Loaded external core from '%s' (%d bytes)\n", corefile, flen);
     }
     fclose(f);
   }
